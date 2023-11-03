@@ -274,11 +274,11 @@ describe Grape::Idempotency do
       end
     end
 
-    describe 'header_key' do
+    describe 'idempotency_key_header' do
       before do
         Grape::Idempotency.configure do |c|
           c.storage = storage
-          c.header_key = "x-custom-idempotency-key"
+          c.idempotency_key_header = "x-custom-idempotency-key"
         end
       end
 
@@ -301,11 +301,11 @@ describe Grape::Idempotency do
       end
     end
 
-    describe 'header_request_id_key' do
+    describe 'request_id_header' do
       before do
         Grape::Idempotency.configure do |c|
           c.storage = storage
-          c.header_request_id_key = "x-custom-request-id-key"
+          c.request_id_header = "x-custom-request-id-key"
         end
       end
 

@@ -65,7 +65,7 @@ module Grape
       def get_idempotency_key(headers)
         idempotency_key = nil
         headers.each do |key, value|
-          idempotency_key = value if key.downcase == configuration.header_key.downcase
+          idempotency_key = value if key.downcase == configuration.idempotency_key_header.downcase
         end
         idempotency_key
       end
@@ -73,7 +73,7 @@ module Grape
       def get_request_id(headers)
         request_id = nil
         headers.each do |key, value|
-          request_id = value if key.downcase == configuration.header_request_id_key.downcase
+          request_id = value if key.downcase == configuration.request_id_header.downcase
         end
         request_id || "req_#{SecureRandom.hex}"
       end
@@ -109,15 +109,15 @@ module Grape
     end
 
     class Configuration
-      attr_accessor :storage, :expires_in, :header_key, :header_request_id_key, :conflict_error_response
+      attr_accessor :storage, :expires_in, :idempotency_key_header, :request_id_header, :conflict_error_response
 
       class Error < StandardError; end
 
       def initialize
         @storage = nil
         @expires_in = 216_000
-        @header_key = "idempotency-key"
-        @header_request_id_key = "x-request-id"
+        @idempotency_key_header = "idempotency-key"
+        @request_id_header = "x-request-id"
         @conflict_error_response = { 
           "error" => "You are using the same idempotent key for two different requests"
         }
