@@ -29,18 +29,13 @@ jobs:
         echo "::set-output name=version::$VERSION"
       shell: bash
 
-    - name: Check if Gem Version Exists in ruby gems
-      id: check-exists
-      run: |
-        gem fetch grape-idempotency -v ${{ steps.get-version.outputs.version }}
-          if [ $? -eq 0 ]; then
-            echo "Gem version already exists on RubyGems. Skipping the push to RubyGems."
-            exit 0
-          fi
-      shell: bash
-
     - name: Publish to RubyGems
       run: |
+        gem fetch grape-idempotency -v ${{ steps.get-version.outputs.version }}
+        if [ $? -eq 0 ]; then
+          echo "Gem version already exists on RubyGems. Skipping the push to RubyGems."
+          exit 0
+        fi
         mkdir -p $HOME/.gem
         touch $HOME/.gem/credentials
         chmod 0600 $HOME/.gem/credentials
