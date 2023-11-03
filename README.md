@@ -1,6 +1,7 @@
 # grape-idempotency 🍇🔁
 
 [![Gem Version](https://badge.fury.io/rb/grape-idempotency.svg)](https://badge.fury.io/rb/grape-idempotency)
+[![Build Status](https://github.com/jcagarcia/grape-idempotency/actions/workflows/ruby.yml/badge.svg?branch=main)](https://github.com/jcagarcia/grape-idempotency/actions)
 
 Gem for supporting idempotency in your [Grape](https://github.com/ruby-grape/grape) APIs.
 
