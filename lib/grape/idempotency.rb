@@ -27,12 +27,13 @@ module Grape
         return block.call unless idempotency_key
 
         cached_request = get_from_cache(idempotency_key)
-        if cached_request && cached_request["params"] != grape.request.params
+        if cached_request && (cached_request["params"] != grape.request.params || cached_request["path"] != grape.request.path)
           grape.status 409
           return configuration.conflict_error_response.to_json
         elsif cached_request
           grape.status cached_request["status"]
           grape.header(ORIGINAL_REQUEST_HEADER, cached_request["original_request"])
+          grape.header(configuration.idempotency_key_header, idempotency_key)
           return cached_request["response"]
         end
 
@@ -49,7 +50,10 @@ module Grape
         response
       ensure
         validate_config!
-        store_in_cache(idempotency_key, grape.request.params, grape.status, original_request_id, response) unless cached_request
+        unless cached_request
+          stored_key = store_in_cache(idempotency_key, grape.request.path, grape.request.params, grape.status, original_request_id, response)
+          grape.header(configuration.idempotency_key_header, stored_key)
+        end
       end
 
       private
@@ -85,18 +89,36 @@ module Grape
         JSON.parse(value)
       end
 
-      def store_in_cache(idempotency_key, params, status, request_id, response)
+      def store_in_cache(idempotency_key, path, params, status, request_id, response)
         body = {
+          path: path,
           params: params,
           status: status,
           original_request: request_id,
           response: response
         }.to_json
-        storage.set(key(idempotency_key), body, ex: configuration.expires_in)
+
+        result = storage.set(key(idempotency_key), body, ex: configuration.expires_in, nx: true)
+
+        if !result
+          return store_in_cache(random_idempotency_key, path, params, status, request_id, response)
+        else
+          return idempotency_key
+        end
       end
 
       def key(idempotency_key)
         "grape:idempotency:#{idempotency_key}"
+      end
+
+      def random_idempotency_key
+        tentative_key = SecureRandom.uuid
+        already_existing_key = storage.get(key(tentative_key))
+        if already_existing_key
+          return random_idempotency_key
+        else
+          return tentative_key
+        end
       end
 
       def storage
