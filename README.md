@@ -75,7 +75,7 @@ Keys are automatically removed from the system if they are at least 24 hours old
 
 Results are only saved if an API endpoint begins its execution. If incoming parameters fail validation or if the request conflicts with another one executing concurrently, no idempotent result is stored because no API endpoint has initiated execution. In such cases, retrying these requests is safe.
 
-Additionally, this gem automatically appends the `Original-Request` header and the `Idempotent-Key` header to your API's response, enabling you to trace back to the initial request that generated that specific response.
+Additionally, this gem automatically appends the `Original-Request` header and the `Idempotency-Key` header to your API's response, enabling you to trace back to the initial request that generated that specific response.
 
 ## Configuration 🪚
 
