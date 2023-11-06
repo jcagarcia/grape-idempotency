@@ -118,6 +118,29 @@ describe Grape::Idempotency do
                   expect(last_response.headers).to include("original-request" => "req_123456")
                 end
               end
+
+              context 'when the endpoint returns a hash' do
+                it 'returns the original response' do
+                  allow(SecureRandom).to receive(:random_number).and_return(1, 2)
+
+                  app.post('/payments') do
+                    idempotent do
+                      status 200
+                      { amount_to: SecureRandom.random_number }
+                    end
+                  end
+
+                  header "idempotency-key", idempotency_key
+                  post 'payments?locale=es', { amount: 100_00 }.to_json
+                  expect(last_response.status).to eq(200)
+                  expect(last_response.body).to eq("{:amount_to=>1}")
+
+                  header "idempotency-key", idempotency_key
+                  post 'payments?locale=es', { amount: 100_00 }.to_json
+                  expect(last_response.status).to eq(200)
+                  expect(last_response.body).to eq("{\"amount_to\"=>1}")
+                end
+              end
             end
 
             context 'but any of the provided parameters does NOT match with the original request' do
