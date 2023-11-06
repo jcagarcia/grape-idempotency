@@ -73,7 +73,7 @@ describe Grape::Idempotency do
                 post 'payments?locale=es', { amount: 100_00 }.to_json
               end
 
-              it 'includes the original request id in the response headers' do
+              it 'includes the original request id and the idempotency key in the response headers' do
                 original_request_id = "a-request-identifier"
                 allow(SecureRandom).to receive(:random_number).and_return(1, 2)
     
@@ -88,11 +88,13 @@ describe Grape::Idempotency do
                 header "x-request-id", original_request_id
                 post 'payments?locale=es', { amount: 100_00 }.to_json
                 expect(last_response.headers).to include("original-request" => original_request_id)
+                expect(last_response.headers).to include("idempotency-key" => idempotency_key)
     
                 header "idempotency-key", idempotency_key
                 header "x-request-id", 'another-request-id'
                 post 'payments?locale=es', { amount: 100_00 }.to_json
                 expect(last_response.headers).to include("original-request" => original_request_id)
+                expect(last_response.headers).to include("idempotency-key" => idempotency_key)
               end
 
               context 'when the original request does not include a request id header' do
@@ -140,6 +142,36 @@ describe Grape::Idempotency do
                 expect(last_response.body).to eq({ "error" => "You are using the same idempotent key for two different requests" }.to_json)
               end
             end
+
+            context 'but is not the same endpoint than the one used in the original request' do
+              it 'returns an 409 coflict http error' do
+                allow(SecureRandom).to receive(:random_number).and_return(1, 2)
+
+                app.post('/payments') do
+                  idempotent do
+                    status 200
+                    { amount_to: SecureRandom.random_number }.to_json
+                  end
+                end
+
+                app.post('/refunds') do
+                  idempotent do
+                    status 200
+                    { amount_to: SecureRandom.random_number }.to_json
+                  end
+                end
+
+                header "idempotency-key", idempotency_key
+                post 'payments?locale=es', { amount: 100_00 }.to_json
+                expect(last_response.status).to eq(200)
+                expect(last_response.body).to eq({ amount_to: 1 }.to_json)
+
+                header "idempotency-key", idempotency_key
+                post 'refunds?locale=es', { amount: 100_00 }.to_json
+                expect(last_response.status).to eq(409)
+                expect(last_response.body).to eq({ "error" => "You are using the same idempotent key for two different requests" }.to_json)
+              end
+            end
           end
   
           context 'and there is NOT a response already stored in the storage' do
@@ -152,13 +184,14 @@ describe Grape::Idempotency do
                 end
               end
   
-              expect(storage).to receive(:set) do |key, body, expires_in|
+              expect(storage).to receive(:set) do |key, body, opts|
                 expect(key).to eq("grape:idempotency:#{idempotency_key}")
                 json_body = JSON.parse(body, symbolize_names: true)
                 expect(json_body[:response]).to eq(expected_response_body.to_json)
+                expect(json_body[:path]).to eq("/payments")
                 expect(json_body[:params]).to eq({:"locale"=>"undefined", :"{\"amount\":10000}"=>nil})
                 expect(json_body[:status]).to eq(500)
-                expect(expires_in).to eq({ex: 216_000})
+                expect(opts).to eq({ex: 216_000, nx: true})
               end
       
               header "idempotency-key", idempotency_key
@@ -190,6 +223,39 @@ describe Grape::Idempotency do
                 post 'payments?locale=es', { amount: 100_00 }.to_json
                 expect(last_response.status).to eq(500)
                 expect(last_response.body).to eq("{\"error\":\"Internal Server Error\",\"message\":\"Unexpected error\"}")
+              end
+            end
+
+            it 'returns the idempotency key in the headers' do
+              expected_response_body = { error: "Internal Server Error" }
+              app.post('/payments') do
+                idempotent do
+                  status 500
+                  expected_response_body.to_json
+                end
+              end
+      
+              header "idempotency-key", idempotency_key
+              post 'payments?locale=undefined', { amount: 100_00 }.to_json
+              expect(last_response.headers).to include("idempotency-key" => idempotency_key)
+            end
+
+            context 'because parallel requests and not stored yet when performing the check' do
+              it 'stores the request using a new random idempotency key and returns it in the header response' do
+                expected_idempotency_key = 'a-idempotency-key-value'
+                app.post('/payments') do
+                  idempotent do
+                    status 201
+                    { }.to_json
+                  end
+                end
+
+                allow(SecureRandom).to receive(:uuid).and_return(expected_idempotency_key)
+                allow(storage).to receive(:set).and_return(false, true)
+        
+                header "idempotency-key", idempotency_key
+                post 'payments?locale=undefined', { amount: 100_00 }.to_json
+                expect(last_response.headers).to include("idempotency-key" => expected_idempotency_key)
               end
             end
           end
@@ -265,8 +331,8 @@ describe Grape::Idempotency do
           end
         end
 
-        expect(storage).to receive(:set) do |key, body, expires_in|
-          expect(expires_in).to eq({ex: 1800})
+        expect(storage).to receive(:set) do |key, body, opts|
+          expect(opts).to eq({ex: 1800, nx: true})
         end
 
         header "idempotency-key", idempotency_key
@@ -298,6 +364,24 @@ describe Grape::Idempotency do
         header "x-custom-idempotency-key", idempotency_key
         post 'payments?locale=undefined', { amount: 100_00 }.to_json
         expect(last_response.headers).to include("original-request" => "wadus")
+      end
+
+      it 'returns the key using the configured header name in the response headers' do
+        expected_response_body = { error: "Internal Server Error" }
+        app.post('/payments') do
+          idempotent do
+            status 500
+            expected_response_body.to_json
+          end
+        end
+
+        header "x-custom-idempotency-key", idempotency_key
+        header "x-request-id", "wadus"
+        post 'payments?locale=undefined', { amount: 100_00 }.to_json
+
+        header "x-custom-idempotency-key", idempotency_key
+        post 'payments?locale=undefined', { amount: 100_00 }.to_json
+        expect(last_response.headers).to include("x-custom-idempotency-key" => idempotency_key)
       end
     end
 

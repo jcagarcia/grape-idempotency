@@ -1,10 +1,9 @@
-# grape-idempotency 🍇🔁
+# Grape::Idempotency 🍇🔁
 
 [![Gem Version](https://badge.fury.io/rb/grape-idempotency.svg)](https://badge.fury.io/rb/grape-idempotency)
 [![Build Status](https://github.com/jcagarcia/grape-idempotency/actions/workflows/ruby.yml/badge.svg?branch=main)](https://github.com/jcagarcia/grape-idempotency/actions)
 
 Gem for supporting idempotency in your [Grape](https://github.com/ruby-grape/grape) APIs.
-
 
 Topics covered in this README:
 
@@ -76,7 +75,7 @@ Keys are automatically removed from the system if they are at least 24 hours old
 
 Results are only saved if an API endpoint begins its execution. If incoming parameters fail validation or if the request conflicts with another one executing concurrently, no idempotent result is stored because no API endpoint has initiated execution. In such cases, retrying these requests is safe.
 
-Additionally, this gem automatically appends the `Original-Request` header to your API's response, enabling you to trace back to the initial request that generated that specific response.
+Additionally, this gem automatically appends the `Original-Request` header and the `Idempotency-Key` header to your API's response, enabling you to trace back to the initial request that generated that specific response.
 
 ## Configuration 🪚
 
