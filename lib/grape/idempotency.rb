@@ -41,13 +41,11 @@ module Grape
           block.call
         end
 
-        if response.is_a?(Hash)
-          response = response[:message].to_json
-        end
+        response = response[:message].to_json if is_an_error?(response)
 
         original_request_id = get_request_id(grape.request.headers)
         grape.header(ORIGINAL_REQUEST_HEADER, original_request_id)
-        response
+        grape.body response
       ensure
         validate_config!
         unless cached_request
@@ -105,6 +103,10 @@ module Grape
         else
           return idempotency_key
         end
+      end
+
+      def is_an_error?(response)
+        response.is_a?(Hash) && response.has_key?(:message) && response.has_key?(:headers) && response.has_key?(:status)
       end
 
       def key(idempotency_key)
