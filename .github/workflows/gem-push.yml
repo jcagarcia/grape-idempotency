@@ -32,7 +32,7 @@ jobs:
     - name: Publish to RubyGems
       run: |
         gem fetch grape-idempotency -v ${{ steps.get-version.outputs.version }}
-        if [ $? -eq 0 ]; then
+        if [ $? -eq 1 ]; then
           echo "Gem version already exists on RubyGems. Skipping the push to RubyGems."
           exit 0
         fi
