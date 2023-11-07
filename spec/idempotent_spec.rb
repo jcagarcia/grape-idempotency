@@ -249,6 +249,36 @@ describe Grape::Idempotency do
               end
             end
 
+            context 'and a managed exception using grape rescue_from appears executing the code' do
+              it 'stores the exception response and returns the same response in the second call' do
+                allow(SecureRandom).to receive(:random_number).and_return(1, 2)
+
+                app.rescue_from StandardError do |e|
+                  status = 404
+                  error = { message: "Not found error" }
+                  error!(error, status)
+                end
+
+                app.post('/payments') do
+                  idempotent do
+                    raise "Not found error error" if SecureRandom.random_number == 1
+                    status 200
+                    { amount_to: 100_00 }.to_json
+                  end
+                end
+  
+                header "idempotency-key", idempotency_key
+                post 'payments?locale=es', { amount: 100_00 }.to_json
+                expect(last_response.status).to eq(404)
+                expect(last_response.body).to eq("{\"message\":\"Not found error\"}")
+  
+                header "idempotency-key", idempotency_key
+                post 'payments?locale=es', { amount: 100_00 }.to_json
+                expect(last_response.status).to eq(404)
+                expect(last_response.body).to eq("{\"message\"=>\"Not found error\"}")
+              end
+            end
+
             it 'returns the idempotency key in the headers' do
               expected_response_body = { error: "Internal Server Error" }
               app.post('/payments') do

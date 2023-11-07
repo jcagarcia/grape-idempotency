@@ -1,6 +1,7 @@
 require 'grape'
 require 'securerandom'
 require 'grape/idempotency/version'
+require 'grape/idempotency/middleware/error'
 
 module Grape
   module Idempotency
@@ -29,7 +30,7 @@ module Grape
         cached_request = get_from_cache(idempotency_key)
         if cached_request && (cached_request["params"] != grape.request.params || cached_request["path"] != grape.request.path)
           grape.status 409
-          return configuration.conflict_error_response.to_json
+          return configuration.conflict_error_response
         elsif cached_request
           grape.status cached_request["status"]
           grape.header(ORIGINAL_REQUEST_HEADER, cached_request["original_request"])
@@ -41,17 +42,42 @@ module Grape
           block.call
         end
 
-        response = response[:message].to_json if is_an_error?(response)
+        response = response[:message] if is_an_error?(response)
 
         original_request_id = get_request_id(grape.request.headers)
         grape.header(ORIGINAL_REQUEST_HEADER, original_request_id)
         grape.body response
-      ensure
-        validate_config!
-        unless cached_request
-          stored_key = store_in_cache(idempotency_key, grape.request.path, grape.request.params, grape.status, original_request_id, response)
+      rescue => e
+        if !cached_request && !response
+          validate_config!
+          original_request_id = get_request_id(grape.request.headers)
+          stored_key = store_error_request(idempotency_key, grape.request.path, grape.request.params, grape.status, original_request_id, e)
+          grape.header(ORIGINAL_REQUEST_HEADER, original_request_id)
           grape.header(configuration.idempotency_key_header, stored_key)
         end
+        raise
+      ensure
+        if !cached_request && response
+          validate_config!
+          stored_key = store_request(idempotency_key, grape.request.path, grape.request.params, grape.status, original_request_id, response)
+          grape.header(configuration.idempotency_key_header, stored_key)
+        end
+      end
+
+      def update_error_with_rescue_from_result(error, status, response)
+        validate_config!
+
+        stored_error = get_error_request_for(error)
+        return unless stored_error
+
+        request_with_unmanaged_error = stored_error[:request]
+        idempotency_key = stored_error[:idempotency_key]
+        path = request_with_unmanaged_error["path"]
+        params = request_with_unmanaged_error["params"]
+        original_request_id = request_with_unmanaged_error["original_request"]
+
+        store_request(idempotency_key, path, params, status, original_request_id, response)
+        storage.del(stored_error[:error_key])
       end
 
       private
@@ -87,7 +113,7 @@ module Grape
         JSON.parse(value)
       end
 
-      def store_in_cache(idempotency_key, path, params, status, request_id, response)
+      def store_request(idempotency_key, path, params, status, request_id, response)
         body = {
           path: path,
           params: params,
@@ -99,10 +125,50 @@ module Grape
         result = storage.set(key(idempotency_key), body, ex: configuration.expires_in, nx: true)
 
         if !result
-          return store_in_cache(random_idempotency_key, path, params, status, request_id, response)
+          return store_request(random_idempotency_key, path, params, status, request_id, response)
         else
           return idempotency_key
         end
+      end
+
+      def store_error_request(idempotency_key, path, params, status, request_id, error)
+        body = {
+          path: path,
+          params: params,
+          status: status,
+          original_request: request_id,
+          error: {
+            class_name: error.class.to_s,
+            message: error.message
+          }
+        }.to_json
+
+        result = storage.set(error_key(idempotency_key), body, ex: 30, nx: true)
+
+        if !result
+          return store_error_request(random_idempotency_key, path, params, status, request_id, error)
+        else
+          return idempotency_key
+        end
+      end
+
+      def get_error_request_for(error)
+        error_keys = storage.keys("#{error_key_prefix}*")
+        return if error_keys.empty?
+
+        error_keys.map do |key|
+          request_with_error = JSON.parse(storage.get(key))
+          error_class_name = request_with_error["error"]["class_name"]
+          error_message = request_with_error["error"]["message"]
+          
+          if error_class_name == error.class.to_s && error_message == error.message
+            {
+              error_key: key,
+              request: request_with_error,
+              idempotency_key: key.gsub(error_key_prefix, '')
+            }
+          end
+        end.first
       end
 
       def is_an_error?(response)
@@ -110,7 +176,19 @@ module Grape
       end
 
       def key(idempotency_key)
-        "grape:idempotency:#{idempotency_key}"
+        "#{gem_prefix}#{idempotency_key}"
+      end
+
+      def error_key(idempotency_key)
+        "#{error_key_prefix}#{idempotency_key}"
+      end
+
+      def error_key_prefix
+        "#{gem_prefix}error:"
+      end
+
+      def gem_prefix
+        "grape:idempotency:"
       end
 
       def random_idempotency_key
