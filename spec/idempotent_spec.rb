@@ -162,7 +162,7 @@ describe Grape::Idempotency do
                 header "idempotency-key", idempotency_key
                 post 'payments?locale=en', { amount: 800_00 }.to_json
                 expect(last_response.status).to eq(409)
-                expect(last_response.body).to eq({ "error" => "You are using the same idempotent key for two different requests" }.to_json)
+                expect(last_response.body).to eq("{\"error\"=>\"You are using the same idempotent key for two different requests\"}")
               end
             end
 
@@ -192,7 +192,7 @@ describe Grape::Idempotency do
                 header "idempotency-key", idempotency_key
                 post 'refunds?locale=es', { amount: 100_00 }.to_json
                 expect(last_response.status).to eq(409)
-                expect(last_response.body).to eq({ "error" => "You are using the same idempotent key for two different requests" }.to_json)
+                expect(last_response.body).to eq("{\"error\"=>\"You are using the same idempotent key for two different requests\"}")
               end
             end
           end
@@ -240,12 +240,12 @@ describe Grape::Idempotency do
                 header "idempotency-key", idempotency_key
                 post 'payments?locale=es', { amount: 100_00 }.to_json
                 expect(last_response.status).to eq(500)
-                expect(last_response.body).to eq("{\"error\":\"Internal Server Error\",\"message\":\"Unexpected error\"}")
+                expect(last_response.body).to eq("{:error=>\"Internal Server Error\", :message=>\"Unexpected error\"}")
   
                 header "idempotency-key", idempotency_key
                 post 'payments?locale=es', { amount: 100_00 }.to_json
                 expect(last_response.status).to eq(500)
-                expect(last_response.body).to eq("{\"error\":\"Internal Server Error\",\"message\":\"Unexpected error\"}")
+                expect(last_response.body).to eq("{\"error\"=>\"Internal Server Error\", \"message\"=>\"Unexpected error\"}")
               end
             end
 
@@ -500,7 +500,7 @@ describe Grape::Idempotency do
         header "idempotency-key", idempotency_key
         post 'payments?locale=en', { amount: 800_00 }.to_json
         expect(last_response.status).to eq(409)
-        expect(last_response.body).to eq(expected_error_response.to_json)
+        expect(last_response.body).to eq("{:error=>\"An error wadus with conflict\", :status=>409, :message=>\"You are using the same idempotency key for two different requests\"}")
       end
     end
   end
