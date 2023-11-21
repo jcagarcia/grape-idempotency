@@ -12,6 +12,7 @@ Topics covered in this README:
 - [Installation](#installation-)
 - [Basic Usage](#basic-usage-)
 - [How it works](#how-it-works-)
+- [Making idempotency key header mandatory](#making-idempotency-key-header-mandatory)
 - [Configuration](#configuration-)
 - [Changelog](#changelog)
 - [Contributing](#contributing)
@@ -65,7 +66,7 @@ That's all! 🚀
 
 ## How it works 🤔
 
-Once you've set up the gem and enclosed your endpoint code within the `idempotent` method, your endpoint will exhibit idempotent behavior, but this will only occur if the consumer of the endpoint includes an idempotency key in their request.
+Once you've set up the gem and enclosed your endpoint code within the `idempotent` method, your endpoint will exhibit idempotent behavior, but this will only occur if the consumer of the endpoint includes an idempotency key in their request. (If you want to make the idempotency key header mandatory for your endpoint, check [How to make idempotency key header mandatory](#making-idempotency-key-header-mandatory-) section)
 
 This key allows your consumer to make the same request again in case of a connection error, without the risk of creating a duplicate object or executing the update twice.
 
@@ -79,6 +80,38 @@ If a request is received while another one with the same idempotency key is stil
 Results are only saved if an API endpoint begins its execution. If incoming parameters fail validation or if the request conflicts with another one executing concurrently, no idempotent result is stored because no API endpoint has initiated execution. In such cases, retrying these requests is safe.
 
 Additionally, this gem automatically appends the `Original-Request` header and the `Idempotency-Key` header to your API's response, enabling you to trace back to the initial request that generated that specific response.
+
+## Making idempotency key header mandatory ⚠️
+
+For some endpoints, you want to enforce your consumers to provide idempotency key. So, when wrapping the code inside the `idempotent` method, you can mark it as `required`:
+
+```ruby
+require 'grape'
+require 'grape-idempotency'
+
+class API < Grape::API
+    post '/payments' do
+      idempotent(required: true) do
+        status 201
+        Payment.create!({
+          amount: params[:amount]
+        })
+      end
+    end
+  end
+end
+```
+
+If the Idempotency-Key request header is missing for a idempotent operation requiring this header, the gem will reply with an HTTP 400 status code with the following body:
+
+```json
+{
+  "title": "Idempotency-Key is missing",
+  "detail": "This operation is idempotent and it requires correct usage of Idempotency Key.",
+}
+```
+
+If you want to change the error message returned in this scenario, check [How to configure idempotency key missing error message](#mandatory_header_response) section.
 
 ## Configuration 🪚
 
@@ -153,9 +186,11 @@ Grape::Idempotency.configure do |c|
 end
 ```
 
+In the configuration above, the error is following the [RFC-7807](https://datatracker.ietf.org/doc/html/rfc7807) format.
+
 ### processing_response
 
-When a request with a `Idempotency-Key: <key>` header is performed while a previous one still on going with the same idempotency value, this gem returns a `409 - Conflict` status. Thre response body returned by the gem looks like:
+When a request with a `Idempotency-Key: <key>` header is performed while a previous one still on going with the same idempotency value, this gem returns a `409 - Conflict` status. The response body returned by the gem looks like:
 
 ```json
 {
@@ -175,6 +210,33 @@ Grape::Idempotency.configure do |c|
     "status": 409,
     "title": "A request is still being processed",
     "detail": "A request with the same idempotent key is being procesed"
+}
+end
+```
+
+In the configuration above, the error is following the [RFC-7807](https://datatracker.ietf.org/doc/html/rfc7807) format.
+
+### mandatory_header_response
+
+If the Idempotency-Key request header is missing for a idempotent operation requiring this header, the gem will reply with an HTTP 400 status code with the following body:
+
+```json
+{
+  "title": "Idempotency-Key is missing",
+  "detail": "This operation is idempotent and it requires correct usage of Idempotency Key.",
+}
+```
+
+You have the option to specify the desired response body to be returned to your users when this error occurs. This allows you to align the error format with the one used in your application.
+
+```ruby
+Grape::Idempotency.configure do |c|
+  c.storage = @storage
+  c.mandatory_header_response = {
+    "type": "about:blank",
+    "status": 400,
+    "title": "Idempotency-Key is missing",
+    "detail": "Please, provide a valid idempotent key in the headers for performing this operation"
 }
 end
 ```
@@ -223,4 +285,5 @@ Open issues on the GitHub issue tracker with clear information.
 
 ### Contributors
 
-*   Juan Carlos García - Creator - https://github.com/jcagarcia
+* Juan Carlos García - Creator - https://github.com/jcagarcia
+* Carlos Cabanero - Contributor - https://github.com/Flip120

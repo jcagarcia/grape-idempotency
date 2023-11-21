@@ -21,19 +21,19 @@ module Grape
         @configuration = clean_configuration
       end
 
-      def idempotent(grape, &block)
+      def idempotent(grape, required: false, &block)
         validate_config!
 
         idempotency_key = get_idempotency_key(grape.request.headers)
-        return block.call unless idempotency_key
+
+        grape.error!(configuration.mandatory_header_response, 400) if required && !idempotency_key
+        return block.call if !idempotency_key
 
         cached_request = get_from_cache(idempotency_key)
         if cached_request && (cached_request["params"] != grape.request.params || cached_request["path"] != grape.request.path)
-          grape.status 409
-          return configuration.conflict_error_response
+          grape.error!(configuration.conflict_error_response, 409)
         elsif cached_request && cached_request["processing"] == true
-          grape.status 409
-          return configuration.processing_response.to_json
+          grape.error!(configuration.processing_response, 409)
         elsif cached_request
           grape.status cached_request["status"]
           grape.header(ORIGINAL_REQUEST_HEADER, cached_request["original_request"])
@@ -213,7 +213,7 @@ module Grape
     end
 
     class Configuration
-      attr_accessor :storage, :expires_in, :idempotency_key_header, :request_id_header, :conflict_error_response, :processing_response
+      attr_accessor :storage, :expires_in, :idempotency_key_header, :request_id_header, :conflict_error_response, :processing_response, :mandatory_header_response
 
       class Error < StandardError; end
 
@@ -229,6 +229,10 @@ module Grape
         @processing_response = {
           "title" => "A request is outstanding for this Idempotency-Key",
           "detail" => "A request with the same idempotent key for the same operation is being processed or is outstanding."
+        }
+        @mandatory_header_response = {
+          "title" => "Idempotency-Key is missing",
+          "detail" => "This operation is idempotent and it requires correct usage of Idempotency Key."
         }
       end
     end
