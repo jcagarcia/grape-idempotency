@@ -72,7 +72,7 @@ To execute an idempotent request, simply request your user to include an extra `
 This gem operates by storing the initial request's status code and response body, regardless of whether the request succeeded or failed, using a specific idempotency key. Subsequent requests with the same key will consistently yield the same result, even if there were 500 errors.
 
 Keys are automatically removed from the system if they are at least 24 hours old, and a new request is generated when a key is reused after the original has been removed. The idempotency layer compares incoming parameters to those of the original request and returns a `409 - Conflict` status code if they don't match, preventing accidental misuse.
-If a request is received while another one with the same idempotency key is received is still being processed the idempotency layer returns a `409 - Conflict` status
+If a request is received while another one with the same idempotency key is still being processed the idempotency layer returns a `409 - Conflict` status
 
 Results are only saved if an API endpoint begins its execution. If incoming parameters fail validation or if the request conflicts with another one executing concurrently, no idempotent result is stored because no API endpoint has initiated execution. In such cases, retrying these requests is safe.
 
@@ -132,7 +132,8 @@ When providing a `Idempotency-Key: <key>` header, this gem compares incoming par
 ```json
 {
 
-  "error": "You are using the same idempotent key for two different requests"
+  title: "Idempotency-Key is already used",
+  detail: "This operation is idempotent and it requires correct usage of Idempotency Key. Idempotency Key MUST not be reused across different payloads of this operation."
 }
 ```
 
@@ -157,9 +158,24 @@ When a request with a `Idempotency-Key: <key>` header is performed while a previ
 ```json
 {
 
-  "message": "A request with the same idempotent key for the same operation is being processed or is outstanding."
+  title: "A request is outstanding for this Idempotency-Key",
+  detail: "A request with the same idempotent key for the same operation is being processed or is outstanding."
 }
+```
 
+You have the option to specify the desired response body to be returned to your users when this error occurs. This allows you to align the error format with the one used in your application.
+
+```ruby
+Grape::Idempotency.configure do |c|
+  c.storage = @storage
+  c.processing_response = {
+    "type": "about:blank",
+    "status": 409,
+    "title": "A request is still being processed",
+    "detail": "A request with the same idempotent key is being procesed"
+}
+end
+```
 
 In the configuration above, the error is following the [RFC-7807](https://datatracker.ietf.org/doc/html/rfc7807) format.
 

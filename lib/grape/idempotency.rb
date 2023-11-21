@@ -222,11 +222,13 @@ module Grape
         @expires_in = 216_000
         @idempotency_key_header = "idempotency-key"
         @request_id_header = "x-request-id"
-        @conflict_error_response = { 
-          "error" => "You are using the same idempotent key for two different requests"
+        @conflict_error_response = {
+          "title" => "Idempotency-Key is already used",
+          "detail" => "This operation is idempotent and it requires correct usage of Idempotency Key. Idempotency Key MUST not be reused across different payloads of this operation."
         }
         @processing_response = {
-          "message" => "A request with the same idempotent key for the same operation is being processed or is outstanding."
+          "title" => "A request is outstanding for this Idempotency-Key",
+          "detail" => "A request with the same idempotent key for the same operation is being processed or is outstanding."
         }
       end
     end
