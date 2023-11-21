@@ -12,7 +12,7 @@ Topics covered in this README:
 - [Installation](#installation-)
 - [Basic Usage](#basic-usage-)
 - [How it works](#how-it-works-)
-- [Making idempotency key header mandatory](#making-idempotency-key-header-mandatory)
+- [Making idempotency key header mandatory](#making-idempotency-key-header-mandatory-)
 - [Configuration](#configuration-)
 - [Changelog](#changelog)
 - [Contributing](#contributing)
