@@ -1,8 +1,8 @@
 module Grape
   module Idempotency
     module Helpers
-      def idempotent(&block)
-        Grape::Idempotency.idempotent(self) do
+      def idempotent(required: false, &block)
+        Grape::Idempotency.idempotent(self, required: required) do
           block.call
         end
       end

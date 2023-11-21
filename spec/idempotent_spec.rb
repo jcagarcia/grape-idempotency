@@ -162,7 +162,7 @@ describe Grape::Idempotency do
                 header "idempotency-key", idempotency_key
                 post 'payments?locale=en', { amount: 800_00 }.to_json
                 expect(last_response.status).to eq(409)
-                expect(last_response.body).to eq("{\"title\"=>\"Idempotency-Key is already used\", \"detail\"=>\"This operation is idempotent and it requires correct usage of Idempotency Key. Idempotency Key MUST not be reused across different payloads of this operation.\"}")
+                expect(last_response.body).to eq("{\"title\":\"Idempotency-Key is already used\",\"detail\":\"This operation is idempotent and it requires correct usage of Idempotency Key. Idempotency Key MUST not be reused across different payloads of this operation.\"}")
               end
             end
 
@@ -192,7 +192,7 @@ describe Grape::Idempotency do
                 header "idempotency-key", idempotency_key
                 post 'refunds?locale=es', { amount: 100_00 }.to_json
                 expect(last_response.status).to eq(409)
-                expect(last_response.body).to eq("{\"title\"=>\"Idempotency-Key is already used\", \"detail\"=>\"This operation is idempotent and it requires correct usage of Idempotency Key. Idempotency Key MUST not be reused across different payloads of this operation.\"}")
+                expect(last_response.body).to eq("{\"title\":\"Idempotency-Key is already used\",\"detail\":\"This operation is idempotent and it requires correct usage of Idempotency Key. Idempotency Key MUST not be reused across different payloads of this operation.\"}")
               end
             end
           end
@@ -339,6 +339,24 @@ describe Grape::Idempotency do
 
             post 'payments', { amount: 100_00 }.to_json
             expect(last_response.body).to eq({ amount_to: 2 }.to_json)
+          end
+
+          context 'BUT the idempotency key header was mandatory' do
+            it 'returns 400 bad request response' do
+              app.post('/payments') do
+                idempotent(required: true) do
+                  status 201
+                  { amount_to: SecureRandom.random_number }.to_json
+                end
+              end
+
+              post 'payments', { amount: 100_00 }.to_json
+              expect(last_response.body).to eq({
+                title: "Idempotency-Key is missing",
+                detail: "This operation is idempotent and it requires correct usage of Idempotency Key."
+              }.to_json)
+              expect(last_response.status).to eq(400)
+            end
           end
         end
       end
@@ -513,7 +531,7 @@ describe Grape::Idempotency do
         header "idempotency-key", idempotency_key
         post 'payments?locale=en', { amount: 800_00 }.to_json
         expect(last_response.status).to eq(409)
-        expect(last_response.body).to eq("{:error=>\"An error wadus with conflict\", :status=>409, :message=>\"You are using the same idempotency key for two different requests\"}")
+        expect(last_response.body).to eq("{\"error\":\"An error wadus with conflict\",\"status\":409,\"message\":\"You are using the same idempotency key for two different requests\"}")
       end
     end
 
