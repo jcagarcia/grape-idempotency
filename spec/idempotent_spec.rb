@@ -64,7 +64,7 @@ describe Grape::Idempotency do
                   end
                 end
 
-                expect(storage).to receive(:set).once.and_call_original
+                expect(storage).to receive(:set).twice.and_call_original
     
                 header "idempotency-key", idempotency_key
                 post 'payments?locale=es', { amount: 100_00 }.to_json
@@ -162,7 +162,7 @@ describe Grape::Idempotency do
                 header "idempotency-key", idempotency_key
                 post 'payments?locale=en', { amount: 800_00 }.to_json
                 expect(last_response.status).to eq(409)
-                expect(last_response.body).to eq("{\"error\"=>\"You are using the same idempotent key for two different requests\"}")
+                expect(last_response.body).to eq("{\"title\"=>\"Idempotency-Key is already used\", \"detail\"=>\"This operation is idempotent and it requires correct usage of Idempotency Key. Idempotency Key MUST not be reused across different payloads of this operation.\"}")
               end
             end
 
@@ -192,13 +192,13 @@ describe Grape::Idempotency do
                 header "idempotency-key", idempotency_key
                 post 'refunds?locale=es', { amount: 100_00 }.to_json
                 expect(last_response.status).to eq(409)
-                expect(last_response.body).to eq("{\"error\"=>\"You are using the same idempotent key for two different requests\"}")
+                expect(last_response.body).to eq("{\"title\"=>\"Idempotency-Key is already used\", \"detail\"=>\"This operation is idempotent and it requires correct usage of Idempotency Key. Idempotency Key MUST not be reused across different payloads of this operation.\"}")
               end
             end
           end
   
           context 'and there is NOT a response already stored in the storage' do
-            it 'stores the response in the storage' do
+            it 'stores the the request as processing initially without overwritting and later stores the response' do
               expected_response_body = { error: "Internal Server Error" }
               app.post('/payments') do
                 idempotent do
@@ -206,19 +206,47 @@ describe Grape::Idempotency do
                   expected_response_body.to_json
                 end
               end
-  
+
               expect(storage).to receive(:set) do |key, body, opts|
                 expect(key).to eq("grape:idempotency:#{idempotency_key}")
                 json_body = JSON.parse(body, symbolize_names: true)
-                expect(json_body[:response]).to eq(expected_response_body.to_json)
+                expect(json_body[:path]).to eq("/payments")
+                expect(json_body[:params]).to eq({:"locale"=>"undefined", :"{\"amount\":10000}"=>nil})
+                expect(opts).to eq({ex: 216_000, nx: true})
+              end
+
+              expect(storage).to receive(:set) do |key, body, opts|
+                expect(key).to eq("grape:idempotency:#{idempotency_key}")
+                json_body = JSON.parse(body, symbolize_names: true)
                 expect(json_body[:path]).to eq("/payments")
                 expect(json_body[:params]).to eq({:"locale"=>"undefined", :"{\"amount\":10000}"=>nil})
                 expect(json_body[:status]).to eq(500)
-                expect(opts).to eq({ex: 216_000, nx: true})
+                expect(json_body[:response]).to eq(expected_response_body.to_json)
+                expect(opts).to eq({ex: 216_000, nx: false})
               end
-      
+
+
               header "idempotency-key", idempotency_key
               post 'payments?locale=undefined', { amount: 100_00 }.to_json
+            end
+
+            context 'but there is no possible to store the request as processing' do
+              it 'returns conflict' do
+                app.post('/payments') do
+                  idempotent do
+                    status 500
+                    { some: 'value' }.to_json
+                  end
+                end
+
+                expect(storage).to receive(:set).and_return(false)
+
+                header "idempotency-key", idempotency_key
+                post 'payments?locale=es', { amount: 100_00 }.to_json
+
+                expect(last_response.status).to eq(409)
+                expect(last_response.body).to eq("{\"title\"=>\"A request is outstanding for this Idempotency-Key\", \"detail\"=>\"A request with the same idempotent key for the same operation is being processed or is outstanding.\"}")
+              end
             end
 
             context 'and a managed exception appears executing the code' do
@@ -291,25 +319,6 @@ describe Grape::Idempotency do
               header "idempotency-key", idempotency_key
               post 'payments?locale=undefined', { amount: 100_00 }.to_json
               expect(last_response.headers).to include("idempotency-key" => idempotency_key)
-            end
-
-            context 'because parallel requests and not stored yet when performing the check' do
-              it 'stores the request using a new random idempotency key and returns it in the header response' do
-                expected_idempotency_key = 'a-idempotency-key-value'
-                app.post('/payments') do
-                  idempotent do
-                    status 201
-                    { }.to_json
-                  end
-                end
-
-                allow(SecureRandom).to receive(:uuid).and_return(expected_idempotency_key)
-                allow(storage).to receive(:set).and_return(false, true)
-        
-                header "idempotency-key", idempotency_key
-                post 'payments?locale=undefined', { amount: 100_00 }.to_json
-                expect(last_response.headers).to include("idempotency-key" => expected_idempotency_key)
-              end
             end
           end
         end
@@ -386,6 +395,10 @@ describe Grape::Idempotency do
 
         expect(storage).to receive(:set) do |key, body, opts|
           expect(opts).to eq({ex: 1800, nx: true})
+        end
+
+        expect(storage).to receive(:set) do |key, body, opts|
+          expect(opts).to eq({ex: 1800, nx: false})
         end
 
         header "idempotency-key", idempotency_key
@@ -501,6 +514,47 @@ describe Grape::Idempotency do
         post 'payments?locale=en', { amount: 800_00 }.to_json
         expect(last_response.status).to eq(409)
         expect(last_response.body).to eq("{:error=>\"An error wadus with conflict\", :status=>409, :message=>\"You are using the same idempotency key for two different requests\"}")
+      end
+    end
+
+    describe 'processing_response' do
+      let(:expected_processing_request) do
+        {
+          message: "A request with the same idempotency key is being processed",
+          status: 409
+        }
+      end
+
+      before do
+        Grape::Idempotency.configure do |c|
+          c.storage = storage
+          c.processing_response = expected_processing_request
+        end
+      end
+
+      it 'returns an 409 processing http response using the configured processing response' do
+        app.post('/payments') do
+          idempotent do
+            status 200
+
+            { some: 'value' }.to_json
+          end
+        end
+
+        processing_body = {
+          path: '/payments',
+          params: { 'locale' => 'es', amount: "80000" },
+          original_request: 'request-id',
+          processing: true
+        }
+
+        allow(storage).to receive(:get).with("grape:idempotency:#{idempotency_key}").and_return(processing_body.to_json)
+
+        header "idempotency-key", idempotency_key
+        post 'payments?locale=es', { amount: 800_00 }
+
+        expect(last_response.status).to eq(409)
+        expect(last_response.body).to eq(expected_processing_request.to_json)
       end
     end
   end
