@@ -149,6 +149,17 @@ Grape::Idempotency.configure do |c|
 end
 ```
 
+### processing_response
+
+When a request with a `Idempotency-Key: <key>` header is performed while a previous one still on going with the same idempotency value, this gem returns a `102 - Processing` status. Thre response body returned by the gem looks like:
+
+```json
+{
+
+  "message": "A request with the same idempotency key is being processed"
+}
+
+
 In the configuration above, the error is following the [RFC-7807](https://datatracker.ietf.org/doc/html/rfc7807) format.
 
 ## Changelog

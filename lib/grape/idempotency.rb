@@ -28,9 +28,12 @@ module Grape
         return block.call unless idempotency_key
 
         cached_request = get_from_cache(idempotency_key)
-        if cached_request && (cached_request["params"] != grape.request.params || cached_request["path"] != grape.request.path)
+        if cached_request && (cached_request["params"] != grape.request.params || cached_request["path"] != grape.request.path) && !cached_request["processing"]
           grape.status 409
           return configuration.conflict_error_response
+        elsif cached_request && cached_request["processing"] == true
+          grape.status 102
+          return configuration.processing_response.to_json
         elsif cached_request
           grape.status cached_request["status"]
           grape.header(ORIGINAL_REQUEST_HEADER, cached_request["original_request"])
@@ -38,13 +41,15 @@ module Grape
           return cached_request["response"]
         end
 
+        original_request_id = get_request_id(grape.request.headers)
+        store_processing_request(idempotency_key, grape.request.path, grape.request.params, original_request_id)
+
         response = catch(:error) do
           block.call
         end
 
         response = response[:message] if is_an_error?(response)
 
-        original_request_id = get_request_id(grape.request.headers)
         grape.header(ORIGINAL_REQUEST_HEADER, original_request_id)
         grape.body response
       rescue => e
@@ -59,7 +64,7 @@ module Grape
       ensure
         if !cached_request && response
           validate_config!
-          stored_key = store_request(idempotency_key, grape.request.path, grape.request.params, grape.status, original_request_id, response)
+          stored_key = store_request_response(idempotency_key, grape.request.path, grape.request.params, grape.status, original_request_id, response)
           grape.header(configuration.idempotency_key_header, stored_key)
         end
       end
@@ -76,7 +81,7 @@ module Grape
         params = request_with_unmanaged_error["params"]
         original_request_id = request_with_unmanaged_error["original_request"]
 
-        store_request(idempotency_key, path, params, status, original_request_id, response)
+        store_request_response(idempotency_key, path, params, status, original_request_id, response)
         storage.del(stored_error[:error_key])
       end
 
@@ -113,22 +118,33 @@ module Grape
         JSON.parse(value)
       end
 
-      def store_request(idempotency_key, path, params, status, request_id, response)
+      def store_processing_request(idempotency_key, path, params, request_id)
+        body = {
+          path: path,
+          params: params,
+          original_request: request_id,
+          processing: true
+        }
+
+        result = storage.set(key(idempotency_key), body.to_json, ex: configuration.expires_in, nx: true)
+
+        if !result
+          # This should not be reach as we are checking if there is a processing request before
+        end
+      end
+
+      def store_request_response(idempotency_key, path, params, status, request_id, response)
         body = {
           path: path,
           params: params,
           status: status,
           original_request: request_id,
           response: response
-        }.to_json
+        }
 
-        result = storage.set(key(idempotency_key), body, ex: configuration.expires_in, nx: true)
+        storage.set(key(idempotency_key), body.to_json, ex: configuration.expires_in, nx: false)
 
-        if !result
-          return store_request(random_idempotency_key, path, params, status, request_id, response)
-        else
-          return idempotency_key
-        end
+        idempotency_key
       end
 
       def store_error_request(idempotency_key, path, params, status, request_id, error)
@@ -143,12 +159,12 @@ module Grape
           }
         }.to_json
 
-        result = storage.set(error_key(idempotency_key), body, ex: 30, nx: true)
+        result = storage.set(error_key(idempotency_key), body, ex: 30, nx: false)
 
         if !result
-          return store_error_request(random_idempotency_key, path, params, status, request_id, error)
+          store_error_request(random_idempotency_key, path, params, status, request_id, error)
         else
-          return idempotency_key
+          idempotency_key
         end
       end
 
@@ -191,16 +207,6 @@ module Grape
         "grape:idempotency:"
       end
 
-      def random_idempotency_key
-        tentative_key = SecureRandom.uuid
-        already_existing_key = storage.get(key(tentative_key))
-        if already_existing_key
-          return random_idempotency_key
-        else
-          return tentative_key
-        end
-      end
-
       def storage
         configuration.storage
       end
@@ -211,7 +217,7 @@ module Grape
     end
 
     class Configuration
-      attr_accessor :storage, :expires_in, :idempotency_key_header, :request_id_header, :conflict_error_response
+      attr_accessor :storage, :expires_in, :idempotency_key_header, :request_id_header, :conflict_error_response, :processing_response
 
       class Error < StandardError; end
 
@@ -222,6 +228,9 @@ module Grape
         @request_id_header = "x-request-id"
         @conflict_error_response = { 
           "error" => "You are using the same idempotent key for two different requests"
+        }
+        @processing_response = {
+          "message" => "A request with the same idempotency key is being processed"
         }
       end
     end
