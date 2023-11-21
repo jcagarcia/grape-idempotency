@@ -5,6 +5,8 @@
 
 Gem for supporting idempotency in your [Grape](https://github.com/ruby-grape/grape) APIs.
 
+Implementation based on the Active Internet-Draft [draft-ietf-httpapi-idempotency-key-header-04](https://datatracker.ietf.org/doc/draft-ietf-httpapi-idempotency-key-header/04/)
+
 Topics covered in this README:
 
 - [Installation](#installation-)
