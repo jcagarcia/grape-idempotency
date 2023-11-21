@@ -72,6 +72,7 @@ To execute an idempotent request, simply request your user to include an extra `
 This gem operates by storing the initial request's status code and response body, regardless of whether the request succeeded or failed, using a specific idempotency key. Subsequent requests with the same key will consistently yield the same result, even if there were 500 errors.
 
 Keys are automatically removed from the system if they are at least 24 hours old, and a new request is generated when a key is reused after the original has been removed. The idempotency layer compares incoming parameters to those of the original request and returns a `409 - Conflict` status code if they don't match, preventing accidental misuse.
+If a request is received while another one with the same idempotency key is received is still being processed the idempotency layer returns a `409 - Conflict` status
 
 Results are only saved if an API endpoint begins its execution. If incoming parameters fail validation or if the request conflicts with another one executing concurrently, no idempotent result is stored because no API endpoint has initiated execution. In such cases, retrying these requests is safe.
 
@@ -151,12 +152,12 @@ end
 
 ### processing_response
 
-When a request with a `Idempotency-Key: <key>` header is performed while a previous one still on going with the same idempotency value, this gem returns a `102 - Processing` status. Thre response body returned by the gem looks like:
+When a request with a `Idempotency-Key: <key>` header is performed while a previous one still on going with the same idempotency value, this gem returns a `409 - Conflict` status. Thre response body returned by the gem looks like:
 
 ```json
 {
 
-  "message": "A request with the same idempotency key is being processed"
+  "message": "A request with the same idempotent key for the same operation is being processed or is outstanding."
 }
 
 
