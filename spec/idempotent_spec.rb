@@ -161,7 +161,7 @@ describe Grape::Idempotency do
 
                 header "idempotency-key", idempotency_key
                 post 'payments?locale=en', { amount: 800_00 }.to_json
-                expect(last_response.status).to eq(409)
+                expect(last_response.status).to eq(422)
                 expect(last_response.body).to eq("{\"title\":\"Idempotency-Key is already used\",\"detail\":\"This operation is idempotent and it requires correct usage of Idempotency Key. Idempotency Key MUST not be reused across different payloads of this operation.\"}")
               end
             end
@@ -191,7 +191,7 @@ describe Grape::Idempotency do
 
                 header "idempotency-key", idempotency_key
                 post 'refunds?locale=es', { amount: 100_00 }.to_json
-                expect(last_response.status).to eq(409)
+                expect(last_response.status).to eq(422)
                 expect(last_response.body).to eq("{\"title\":\"Idempotency-Key is already used\",\"detail\":\"This operation is idempotent and it requires correct usage of Idempotency Key. Idempotency Key MUST not be reused across different payloads of this operation.\"}")
               end
             end
@@ -245,7 +245,7 @@ describe Grape::Idempotency do
                 post 'payments?locale=es', { amount: 100_00 }.to_json
 
                 expect(last_response.status).to eq(409)
-                expect(last_response.body).to eq("{\"title\"=>\"A request is outstanding for this Idempotency-Key\", \"detail\"=>\"A request with the same idempotent key for the same operation is being processed or is outstanding.\"}")
+                expect(last_response.body).to eq("{\"title\":\"A request is outstanding for this Idempotency-Key\",\"detail\":\"A request with the same idempotent key for the same operation is being processed or is outstanding.\"}")
               end
             end
 
@@ -530,7 +530,7 @@ describe Grape::Idempotency do
 
         header "idempotency-key", idempotency_key
         post 'payments?locale=en', { amount: 800_00 }.to_json
-        expect(last_response.status).to eq(409)
+        expect(last_response.status).to eq(422)
         expect(last_response.body).to eq("{\"error\":\"An error wadus with conflict\",\"status\":409,\"message\":\"You are using the same idempotency key for two different requests\"}")
       end
     end
