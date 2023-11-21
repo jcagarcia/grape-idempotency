@@ -132,8 +132,8 @@ When providing a `Idempotency-Key: <key>` header, this gem compares incoming par
 ```json
 {
 
-  title: "Idempotency-Key is already used",
-  detail: "This operation is idempotent and it requires correct usage of Idempotency Key. Idempotency Key MUST not be reused across different payloads of this operation."
+  "title": "Idempotency-Key is already used",
+  "detail": "This operation is idempotent and it requires correct usage of Idempotency Key. Idempotency Key MUST not be reused across different payloads of this operation."
 }
 ```
 
@@ -158,8 +158,8 @@ When a request with a `Idempotency-Key: <key>` header is performed while a previ
 ```json
 {
 
-  title: "A request is outstanding for this Idempotency-Key",
-  detail: "A request with the same idempotent key for the same operation is being processed or is outstanding."
+  "title": "A request is outstanding for this Idempotency-Key",
+  "detail": "A request with the same idempotent key for the same operation is being processed or is outstanding."
 }
 ```
 
