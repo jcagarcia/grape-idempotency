@@ -31,7 +31,7 @@ module Grape
 
         cached_request = get_from_cache(idempotency_key)
         if cached_request && (cached_request["params"] != grape.request.params || cached_request["path"] != grape.request.path)
-          grape.error!(configuration.conflict_error_response, 409)
+          grape.error!(configuration.conflict_error_response, 422)
         elsif cached_request && cached_request["processing"] == true
           grape.error!(configuration.processing_response, 409)
         elsif cached_request
@@ -44,8 +44,7 @@ module Grape
         original_request_id = get_request_id(grape.request.headers)
         success = store_processing_request(idempotency_key, grape.request.path, grape.request.params, original_request_id)
         if !success
-          grape.status 409
-          return configuration.processing_response
+          grape.error!(configuration.processing_response, 409)
         end
 
         response = catch(:error) do

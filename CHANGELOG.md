@@ -12,7 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+* [#16](https://github.com/jcagarcia/grape-idempotency/pull/16): Changing error response code to 422 for conflict - [@Flip120](https://github.com/Flip120).
 * [#11](https://github.com/jcagarcia/grape-idempotency/pull/11): Changing error response formats - [@Flip120](https://github.com/Flip120).
+
 * Your contribution here.
 
 ### Feature
