@@ -12,15 +12,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-* [#16](https://github.com/jcagarcia/grape-idempotency/pull/16): Changing error response code to 422 for conflict - [@Flip120](https://github.com/Flip120).
 * [#11](https://github.com/jcagarcia/grape-idempotency/pull/11): Changing error response formats - [@Flip120](https://github.com/Flip120).
+* [#16](https://github.com/jcagarcia/grape-idempotency/pull/16): Changing error response code to 422 for conflict - [@Flip120](https://github.com/Flip120).
 
 * Your contribution here.
 
 ### Feature
 
-* [#15](https://github.com/jcagarcia/grape-idempotency/pull/15): Allow to mark the idempotent header as required - [@jcagarcia](https://github.com/jcagarcia).
 * [#11](https://github.com/jcagarcia/grape-idempotency/pull/11): Return 409 conflict when a request is still being processed - [@Flip120](https://github.com/Flip120).
+* [#15](https://github.com/jcagarcia/grape-idempotency/pull/15): Allow to mark the idempotent header as required - [@jcagarcia](https://github.com/jcagarcia).
+* [#17](https://github.com/jcagarcia/grape-idempotency/pull/17): Allow to configure logger - [@jcagarcia](https://github.com/jcagarcia).
 * Your contribution here.
 
 ## [0.1.3] - 2023-01-07
