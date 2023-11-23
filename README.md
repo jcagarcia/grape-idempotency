@@ -160,6 +160,40 @@ end
 
 In the case above, you request your consumers to use the `X-Trace-Id: <trace-id>` header when requesting your API.
 
+### logger, logger_level and logger_prefix
+
+By default, the logger used by the gem is configured like `Logger.new(STDOUT)` and `INFO` level. As this gem does not log any message with `INFO` level, only `ERROR` messages will be logged.
+
+
+If you want to provide your own logger, you want to change the level to `DEBUG` or you want to provide your own prefix, you can configure the gem like:
+
+```ruby
+Grape::Idempotency.configure do |c|
+  c.logger = Infrastructure::MyLogger.new
+  c.logger_level = :debug
+  c.logger_prefix = '[my-own-prefix]'
+end
+```
+
+An example of the logged information when changing the level of the log to `DEBUG` and customizing the `logger_prefix`:
+
+```shell
+I, [2023-11-23T22:41:39.148163 #1]  DEBUG -- : [my-own-prefix] Performing endpoint "/payments" with idempotency.
+I, [2023-11-23T22:41:39.148176 #1]  DEBUG -- : [my-own-prefix] Idempotency key is NOT mandatory for this endpoint.
+I, [2023-11-23T22:41:39.148192 #1]  DEBUG -- : [my-own-prefix] Idempotency key received in request header "x-custom-idempotency-key" => "fd77c9d6-b7da-4966-aac8-40ee258f24aa"
+I, [2023-11-23T22:41:39.148210 #1]  DEBUG -- : [my-own-prefix] Previous request information has NOT been found for the provided idempotency key.
+I, [2023-11-23T22:41:39.148248 #1]  DEBUG -- : [my-own-prefix] Request stored as processing.
+I, [2023-11-23T22:41:39.148261 #1]  DEBUG -- : [my-own-prefix] Performing the provided block.
+I, [2023-11-23T22:41:39.148268 #1]  DEBUG -- : [my-own-prefix] Block has been performed.
+I, [2023-11-23T22:41:39.148287 #1]  DEBUG -- : [my-own-prefix] Storing response.
+I, [2023-11-23T22:41:39.148317 #1]  DEBUG -- : [my-own-prefix] Response stored.
+I, [2023-11-23T22:41:39.148473 #1]  DEBUG -- : [my-own-prefix] Performing endpoint "/payments" with idempotency.
+I, [2023-11-23T22:41:39.148486 #1]  DEBUG -- : [my-own-prefix] Idempotency key is NOT mandatory for this endpoint.
+I, [2023-11-23T22:41:39.148502 #1]  DEBUG -- : [my-own-prefix] Idempotency key received in request header "x-custom-idempotency-key" => "fd77c9d6-b7da-4966-aac8-40ee258f24aa"
+I, [2023-11-23T22:41:39.148523 #1]  DEBUG -- : [my-own-prefix] Request has been found for the provided idempotency key => {"path"=>"/payments", "params"=>{"locale"=>"undefined", "{\"amount\":10000}"=>nil}, "status"=>500, "original_request"=>"wadus", "response"=>"{\"error\":\"Internal Server Error\"}"}
+I, [2023-11-23T22:41:39.148537 #1]  DEBUG -- : [my-own-prefix] Returning the response from the original request.
+```
+
 ### conflict_error_response
 
 When providing a `Idempotency-Key: <key>` header, this gem compares incoming parameters to those of the original request (if exists) and returns a `409 - Conflict` status code if they don't match, preventing accidental misuse. The response body returned by the gem looks like:

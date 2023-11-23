@@ -230,7 +230,7 @@ describe Grape::Idempotency do
               post 'payments?locale=undefined', { amount: 100_00 }.to_json
             end
 
-            context 'but there is no possible to store the request as processing' do
+            context 'but is no possible to store the request as processing' do
               it 'returns conflict' do
                 app.post('/payments') do
                   idempotent do

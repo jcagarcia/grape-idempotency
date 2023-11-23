@@ -3,14 +3,18 @@ require 'grape/middleware/base'
 module Grape
   module Middleware
     class Error < Base
-      def run_rescue_handler(handler, error)
+      def run_rescue_handler(handler, error, endpoint=nil)
         if handler.instance_of?(Symbol)
           raise NoMethodError, "undefined method '#{handler}'" unless respond_to?(handler)
 
           handler = public_method(handler)
         end
 
-        response = handler.arity.zero? ? instance_exec(&handler) : instance_exec(error, &handler)
+        if endpoint
+          response = handler.arity.zero? ? endpoint.instance_exec(&handler) : endpoint.instance_exec(error, &handler)
+        else
+          response = handler.arity.zero? ? instance_exec(&handler) : instance_exec(error, &handler)
+        end
 
         if response.is_a?(Rack::Response)
           update_idempotency_error_with(error, response)
