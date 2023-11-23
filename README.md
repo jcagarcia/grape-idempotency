@@ -169,6 +169,7 @@ If you want to provide your own logger, you want to change the level to `DEBUG` 
 
 ```ruby
 Grape::Idempotency.configure do |c|
+  c.storage = @storage
   c.logger = Infrastructure::MyLogger.new
   c.logger_level = :debug
   c.logger_prefix = '[my-own-prefix]'
