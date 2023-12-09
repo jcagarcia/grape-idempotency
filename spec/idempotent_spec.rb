@@ -22,13 +22,13 @@ describe Grape::Idempotency do
 
         it 'is registered as grape helper' do
           expected_response_body = { payments: [] }
-  
+
           app.post('/payments') do
             idempotent do
               status 401
             end
           end
-  
+
           post 'payments', { amount: 100_00 }.to_json
         end
 
@@ -37,19 +37,19 @@ describe Grape::Idempotency do
             context 'and all the parameters matches with the original request' do
               it 'returns the original response' do
                 allow(SecureRandom).to receive(:random_number).and_return(1, 2)
-    
+
                 app.post('/payments') do
                   idempotent do
                     status 200
                     { amount_to: SecureRandom.random_number }.to_json
                   end
                 end
-    
+
                 header "idempotency-key", idempotency_key
                 post 'payments?locale=es', { amount: 100_00 }.to_json
                 expect(last_response.status).to eq(200)
                 expect(last_response.body).to eq({ amount_to: 1 }.to_json)
-    
+
                 header "idempotency-key", idempotency_key
                 post 'payments?locale=es', { amount: 100_00 }.to_json
                 expect(last_response.status).to eq(200)
@@ -65,10 +65,10 @@ describe Grape::Idempotency do
                 end
 
                 expect(storage).to receive(:set).twice.and_call_original
-    
+
                 header "idempotency-key", idempotency_key
                 post 'payments?locale=es', { amount: 100_00 }.to_json
-    
+
                 header "idempotency-key", idempotency_key
                 post 'payments?locale=es', { amount: 100_00 }.to_json
               end
@@ -76,20 +76,20 @@ describe Grape::Idempotency do
               it 'includes the original request id and the idempotency key in the response headers' do
                 original_request_id = "a-request-identifier"
                 allow(SecureRandom).to receive(:random_number).and_return(1, 2)
-    
+
                 app.post('/payments') do
                   idempotent do
                     status 200
                     { amount_to: SecureRandom.random_number }.to_json
                   end
                 end
-    
+
                 header "idempotency-key", idempotency_key
                 header "x-request-id", original_request_id
                 post 'payments?locale=es', { amount: 100_00 }.to_json
                 expect(last_response.headers).to include("original-request" => original_request_id)
                 expect(last_response.headers).to include("idempotency-key" => idempotency_key)
-    
+
                 header "idempotency-key", idempotency_key
                 header "x-request-id", 'another-request-id'
                 post 'payments?locale=es', { amount: 100_00 }.to_json
@@ -100,18 +100,18 @@ describe Grape::Idempotency do
               context 'when the original request does not include a request id header' do
                 it 'generates a new one' do
                   allow(SecureRandom).to receive(:hex).and_return("123456")
-      
+
                   app.post('/payments') do
                     idempotent do
                       status 200
                       { amount_to: SecureRandom.random_number }.to_json
                     end
                   end
-      
+
                   header "idempotency-key", idempotency_key
                   post 'payments?locale=es', { amount: 100_00 }.to_json
                   expect(last_response.headers).to include("original-request" => "req_123456")
-      
+
                   header "idempotency-key", idempotency_key
                   header "x-request-id", 'another-request-id'
                   post 'payments?locale=es', { amount: 100_00 }.to_json
@@ -196,7 +196,7 @@ describe Grape::Idempotency do
               end
             end
           end
-  
+
           context 'and there is NOT a response already stored in the storage' do
             it 'stores the the request as processing initially without overwritting and later stores the response' do
               expected_response_body = { error: "Internal Server Error" }
@@ -264,12 +264,12 @@ describe Grape::Idempotency do
                     end
                   end
                 end
-  
+
                 header "idempotency-key", idempotency_key
                 post 'payments?locale=es', { amount: 100_00 }.to_json
                 expect(last_response.status).to eq(500)
                 expect(last_response.body).to eq("{:error=>\"Internal Server Error\", :message=>\"Unexpected error\"}")
-  
+
                 header "idempotency-key", idempotency_key
                 post 'payments?locale=es', { amount: 100_00 }.to_json
                 expect(last_response.status).to eq(500)
@@ -294,12 +294,12 @@ describe Grape::Idempotency do
                     { amount_to: 100_00 }.to_json
                   end
                 end
-  
+
                 header "idempotency-key", idempotency_key
                 post 'payments?locale=es', { amount: 100_00 }.to_json
                 expect(last_response.status).to eq(404)
                 expect(last_response.body).to eq("{\"message\":\"Not found error\"}")
-  
+
                 header "idempotency-key", idempotency_key
                 post 'payments?locale=es', { amount: 100_00 }.to_json
                 expect(last_response.status).to eq(404)
@@ -315,10 +315,66 @@ describe Grape::Idempotency do
                   expected_response_body.to_json
                 end
               end
-      
+
               header "idempotency-key", idempotency_key
               post 'payments?locale=undefined', { amount: 100_00 }.to_json
               expect(last_response.headers).to include("idempotency-key" => idempotency_key)
+            end
+          end
+
+          context 'and a Redis exception appears in any of the redis methods' do
+            before do
+              allow(storage).to receive(:get).and_raise(Redis::CannotConnectError)
+              allow(storage).to receive(:set).and_raise(Redis::CannotConnectError)
+              allow(storage).to receive(:del).and_raise(Redis::CannotConnectError)
+            end
+
+            it 'manages the exeception and the endpoint behaves as no idempotent' do
+              allow(SecureRandom).to receive(:random_number).and_return(1, 2)
+
+              app.post('/payments') do
+                idempotent do
+                  status 201
+                  { amount_to: SecureRandom.random_number }.to_json
+                end
+              end
+
+              header "idempotency-key", idempotency_key
+              post 'payments', { amount: 100_00 }.to_json
+              expect(last_response.body).to eq({ amount_to: 1 }.to_json)
+
+              header "idempotency-key", idempotency_key
+              post 'payments', { amount: 100_00 }.to_json
+              expect(last_response.body).to eq({ amount_to: 2 }.to_json)
+            end
+
+            context 'and the gem is configured for NOT managing Redis exceptions' do
+              before do
+                Grape::Idempotency.configure do |c|
+                  c.storage = storage
+                  c.manage_redis_exceptions = false
+                end
+              end
+
+              after do
+                Grape::Idempotency.configure do |c|
+                  c.storage = storage
+                end
+              end
+
+              it 'raises the redis exception' do
+                app.post('/payments') do
+                  idempotent do
+                    status 201
+                    { amount_to: SecureRandom.random_number }.to_json
+                  end
+                end
+
+                expect {
+                  header "idempotency-key", idempotency_key
+                  post 'payments', { amount: 100_00 }.to_json
+                }.to raise_error(Redis::CannotConnectError)
+              end
             end
           end
         end
@@ -326,7 +382,7 @@ describe Grape::Idempotency do
         context 'and a idempotency key is NOT provided in the request' do
           it 'returns the block result in the response body without checking idempotency' do
             allow(SecureRandom).to receive(:random_number).and_return(1, 2)
-  
+
             app.post('/payments') do
               idempotent do
                 status 201

@@ -12,7 +12,8 @@ Topics covered in this README:
 - [Installation](#installation-)
 - [Basic Usage](#basic-usage-)
 - [How it works](#how-it-works-)
-- [Making idempotency key header mandatory](#making-idempotency-key-header-mandatory-)
+  - [Making idempotency key header mandatory](#making-idempotency-key-header-mandatory-)
+  - [Redis Storage Connectivity Issue](#redis-storage-connectivity-issue)
 - [Configuration](#configuration-)
 - [Changelog](#changelog)
 - [Contributing](#contributing)
@@ -81,7 +82,7 @@ Results are only saved if an API endpoint begins its execution. If incoming para
 
 Additionally, this gem automatically appends the `Original-Request` header and the `Idempotency-Key` header to your API's response, enabling you to trace back to the initial request that generated that specific response.
 
-## Making idempotency key header mandatory ⚠️
+### Making idempotency key header mandatory ⚠️
 
 For some endpoints, you want to enforce your consumers to provide idempotency key. So, when wrapping the code inside the `idempotent` method, you can mark it as `required`:
 
@@ -112,6 +113,14 @@ If the Idempotency-Key request header is missing for a idempotent operation requ
 ```
 
 If you want to change the error message returned in this scenario, check [How to configure idempotency key missing error message](#mandatory_header_response) section.
+
+### Redis Storage Connectivity Issue
+
+By default, the `grape-idempotency` gem is configured to handle potential `Redis` exceptions.
+
+Therefore, if an exception arises while attempting to read, write or delete data from the `Redis` storage, the gem will safeguard against a crash by returning empty results. Consequently, the associated `block` will execute without considering potential prior calls made with the provided idempotency key. As a result, the expected idempotent behavior will not be enforced.
+
+If you want to avoid this functionality, you have the option to configure the gem to refrain from handling these `Redis` exceptions. Please refer to the [manage_redis_exceptions](#manage_redis_exceptions) configuration property.
 
 ## Configuration 🪚
 
@@ -193,6 +202,44 @@ I, [2023-11-23T22:41:39.148486 #1]  DEBUG -- : [my-own-prefix] Idempotency key i
 I, [2023-11-23T22:41:39.148502 #1]  DEBUG -- : [my-own-prefix] Idempotency key received in request header "x-custom-idempotency-key" => "fd77c9d6-b7da-4966-aac8-40ee258f24aa"
 I, [2023-11-23T22:41:39.148523 #1]  DEBUG -- : [my-own-prefix] Request has been found for the provided idempotency key => {"path"=>"/payments", "params"=>{"locale"=>"undefined", "{\"amount\":10000}"=>nil}, "status"=>500, "original_request"=>"wadus", "response"=>"{\"error\":\"Internal Server Error\"}"}
 I, [2023-11-23T22:41:39.148537 #1]  DEBUG -- : [my-own-prefix] Returning the response from the original request.
+```
+
+### manage_redis_exceptions
+
+By default, the `grape-idempotency` gem is configured to handle potential `Redis` exceptions.
+
+However, this approach carries a certain level of risk. In the case that `Redis` experiences an outage, the idempotent functionality will be lost, and this issue may go unnoticed.
+
+If you prefer to take control of handling potential `Redis` exceptions, you have the option to configure the gem to abstain from managing Redis exceptions.
+
+```ruby
+Grape::Idempotency.configure do |c|
+  c.storage = @storage
+  c.manage_redis_exceptions = false
+end
+```
+
+Now, if a `Redis` exception arises while attempting to utilize the `Redis` storage, the gem will re-raise the identical exception to your application. Thus, you will be responsible for handling it within your own code, such as:
+
+```ruby
+require 'grape'
+require 'grape-idempotency'
+
+class API < Grape::API
+    post '/payments' do
+      begin
+        idempotent do
+          status 201
+          Payment.create!({
+            amount: params[:amount]
+          })
+        end
+      rescue Redis::BaseError => e
+        error!("Redis error! Idempotency is very important here and we cannot continue.", 500)
+      end
+    end
+  end
+end
 ```
 
 ### conflict_error_response
