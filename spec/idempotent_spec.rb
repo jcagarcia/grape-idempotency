@@ -329,9 +329,7 @@ describe Grape::Idempotency do
               allow(storage).to receive(:del).and_raise(Redis::CannotConnectError)
             end
 
-            it 'manages the exeception and the endpoint behaves as no idempotent' do
-              allow(SecureRandom).to receive(:random_number).and_return(1, 2)
-
+            it 'raises the redis exception' do
               app.post('/payments') do
                 idempotent do
                   status 201
@@ -339,20 +337,17 @@ describe Grape::Idempotency do
                 end
               end
 
-              header "idempotency-key", idempotency_key
-              post 'payments', { amount: 100_00 }.to_json
-              expect(last_response.body).to eq({ amount_to: 1 }.to_json)
-
-              header "idempotency-key", idempotency_key
-              post 'payments', { amount: 100_00 }.to_json
-              expect(last_response.body).to eq({ amount_to: 2 }.to_json)
+              expect {
+                header "idempotency-key", idempotency_key
+                post 'payments', { amount: 100_00 }.to_json
+              }.to raise_error(Redis::CannotConnectError)
             end
 
-            context 'and the gem is configured for NOT managing Redis exceptions' do
+            context 'and the gem is configured for managing Redis exceptions' do
               before do
                 Grape::Idempotency.configure do |c|
                   c.storage = storage
-                  c.manage_redis_exceptions = false
+                  c.manage_redis_exceptions = true
                 end
               end
 
@@ -362,18 +357,23 @@ describe Grape::Idempotency do
                 end
               end
 
-              it 'raises the redis exception' do
+              it 'manages the exeception and the endpoint behaves as no idempotent' do
+                allow(SecureRandom).to receive(:random_number).and_return(1, 2)
+  
                 app.post('/payments') do
                   idempotent do
                     status 201
                     { amount_to: SecureRandom.random_number }.to_json
                   end
                 end
-
-                expect {
-                  header "idempotency-key", idempotency_key
-                  post 'payments', { amount: 100_00 }.to_json
-                }.to raise_error(Redis::CannotConnectError)
+  
+                header "idempotency-key", idempotency_key
+                post 'payments', { amount: 100_00 }.to_json
+                expect(last_response.body).to eq({ amount_to: 1 }.to_json)
+  
+                header "idempotency-key", idempotency_key
+                post 'payments', { amount: 100_00 }.to_json
+                expect(last_response.body).to eq({ amount_to: 2 }.to_json)
               end
             end
           end

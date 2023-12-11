@@ -116,11 +116,32 @@ If you want to change the error message returned in this scenario, check [How to
 
 ### Redis Storage Connectivity Issue
 
-By default, the `grape-idempotency` gem is configured to handle potential `Redis` exceptions.
+By default, `Redis` exceptions are not handled by the `grape-idempotency` gem.
 
-Therefore, if an exception arises while attempting to read, write or delete data from the `Redis` storage, the gem will safeguard against a crash by returning empty results. Consequently, the associated `block` will execute without considering potential prior calls made with the provided idempotency key. As a result, the expected idempotent behavior will not be enforced.
+Therefore, if an exception arises while attempting to read, write or delete data from the `Redis` storage, the gem will re-raise the identical exception to your application. Thus, you will be responsible for handling it within your own code, such as:
 
-If you want to avoid this functionality, you have the option to configure the gem to refrain from handling these `Redis` exceptions. Please refer to the [manage_redis_exceptions](#manage_redis_exceptions) configuration property.
+```ruby
+require 'grape'
+require 'grape-idempotency'
+
+class API < Grape::API
+    post '/payments' do
+      begin
+        idempotent do
+          status 201
+          Payment.create!({
+            amount: params[:amount]
+          })
+        end
+      rescue Redis::BaseError => e
+        error!("Redis error! Idempotency is very important here and we cannot continue.", 500)
+      end
+    end
+  end
+end
+```
+
+If you want to avoid this functionality, and you want the gem handles the potential `Redis` exceptions, you have the option to configure the gem for handling these `Redis` exceptions. Please refer to the [manage_redis_exceptions](#manage_redis_exceptions) configuration property.
 
 ## Configuration 🪚
 
@@ -206,41 +227,18 @@ I, [2023-11-23T22:41:39.148537 #1]  DEBUG -- : [my-own-prefix] Returning the res
 
 ### manage_redis_exceptions
 
-By default, the `grape-idempotency` gem is configured to handle potential `Redis` exceptions.
+By default, the `grape-idempotency` gem is configured to re-raise `Redis` exceptions.
 
-However, this approach carries a certain level of risk. In the case that `Redis` experiences an outage, the idempotent functionality will be lost, and this issue may go unnoticed.
-
-If you prefer to take control of handling potential `Redis` exceptions, you have the option to configure the gem to abstain from managing Redis exceptions.
+If you want to delegate the `Redis` exception management into the gem, you can configure it using the `manage_redis_exceptions` configuration property.
 
 ```ruby
 Grape::Idempotency.configure do |c|
   c.storage = @storage
-  c.manage_redis_exceptions = false
+  c.manage_redis_exceptions = true
 end
 ```
 
-Now, if a `Redis` exception arises while attempting to utilize the `Redis` storage, the gem will re-raise the identical exception to your application. Thus, you will be responsible for handling it within your own code, such as:
-
-```ruby
-require 'grape'
-require 'grape-idempotency'
-
-class API < Grape::API
-    post '/payments' do
-      begin
-        idempotent do
-          status 201
-          Payment.create!({
-            amount: params[:amount]
-          })
-        end
-      rescue Redis::BaseError => e
-        error!("Redis error! Idempotency is very important here and we cannot continue.", 500)
-      end
-    end
-  end
-end
-```
+However, this approach carries a certain level of risk. In the case that `Redis` experiences an outage, the idempotent functionality will be lost, the endpoint will behave as no idempotent, and this issue may go unnoticed.
 
 ### conflict_error_response
 

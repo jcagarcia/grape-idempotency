@@ -298,7 +298,7 @@ module Grape
         @expires_in = 216_000
         @idempotency_key_header = "idempotency-key"
         @request_id_header = "x-request-id"
-        @manage_redis_exceptions = true
+        @manage_redis_exceptions = false
         @conflict_error_response = {
           "title" => "Idempotency-Key is already used",
           "detail" => "This operation is idempotent and it requires correct usage of Idempotency Key. Idempotency Key MUST not be reused across different payloads of this operation."
