@@ -143,6 +143,8 @@ end
 
 If you want to avoid this functionality, and you want the gem handles the potential `Redis` exceptions, you have the option to configure the gem for handling these `Redis` exceptions. Please refer to the [manage_redis_exceptions](#manage_redis_exceptions) configuration property.
 
+🚨 WARNING: If a `Redis` exception appears AFTER performing the wrapped code, nothing will be re-raised. The process will continue working and the response will be returned to the consumer of your API. However, a `409 Conflict` response can be returned to your consumer if it retried the same call with the same idempotency key. This is because the gem was not able to associate the response of the original request to the original idempotency key because those connectivity issues.
+
 ## Configuration 🪚
 
 In addition to the storage aspect, you have the option to supply additional configuration details to tailor the gem to the specific requirements of your project.

@@ -122,8 +122,7 @@ module Grape
         storage.del(stored_error[:error_key])
       rescue Redis::BaseError => e
         log(:error, "Storage error => #{e.message} - #{e}")
-        return if configuration.manage_redis_exceptions
-        raise
+        nil
       end
 
       private
@@ -194,8 +193,7 @@ module Grape
         idempotency_key
       rescue Redis::BaseError => e
         log(:error, "Storage error => #{e.message} - #{e}")
-        return if configuration.manage_redis_exceptions
-        raise
+        idempotency_key
       end
 
       def store_error_request(idempotency_key, path, params, status, request_id, error)
@@ -215,8 +213,7 @@ module Grape
         idempotency_key
       rescue Redis::BaseError => e
         log(:error, "Storage error => #{e.message} - #{e}")
-        return if configuration.manage_redis_exceptions
-        raise
+        idempotency_key
       end
 
       def get_error_request_for(error)
@@ -238,8 +235,7 @@ module Grape
         end.first
       rescue Redis::BaseError => e
         log(:error, "Storage error => #{e.message} - #{e}")
-        return if configuration.manage_redis_exceptions
-        raise
+        nil
       end
 
       def is_an_error?(response)
