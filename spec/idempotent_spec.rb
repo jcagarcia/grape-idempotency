@@ -279,6 +279,7 @@ describe Grape::Idempotency do
 
             context 'and a managed exception using grape rescue_from appears executing the code' do
               it 'stores the exception response and returns the same response in the second call' do
+                app.error_formatter :txt, Grape::ErrorFormatter::Json
                 allow(SecureRandom).to receive(:random_number).and_return(1, 2)
 
                 app.rescue_from StandardError do |e|
@@ -570,6 +571,7 @@ describe Grape::Idempotency do
       end
 
       it 'returns an 409 coflict http error using the configured error response' do
+        app.error_formatter :txt, Grape::ErrorFormatter::Json
         allow(SecureRandom).to receive(:random_number).and_return(1, 2)
 
         app.post('/payments') do
@@ -607,6 +609,7 @@ describe Grape::Idempotency do
       end
 
       it 'returns an 409 processing http response using the configured processing response' do
+        app.error_formatter :txt, Grape::ErrorFormatter::Json
         app.post('/payments') do
           idempotent do
             status 200
