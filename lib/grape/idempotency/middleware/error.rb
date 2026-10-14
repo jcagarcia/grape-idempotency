@@ -10,11 +10,15 @@ module Grape
           handler = public_method(handler)
         end
 
-        if endpoint
-          response = handler.arity.zero? ? endpoint.instance_exec(&handler) : endpoint.instance_exec(error, &handler)
-        else
-          response = handler.arity.zero? ? instance_exec(&handler) : instance_exec(error, &handler)
+        response = catch(:error) do
+          if endpoint
+            handler.arity.zero? ? endpoint.instance_exec(&handler) : endpoint.instance_exec(error, &handler)
+          else
+            handler.arity.zero? ? instance_exec(&handler) : instance_exec(error, &handler)
+          end
         end
+
+        response = error_response(response) if thrown_error?(response)
 
         if response.is_a?(Rack::Response)
           update_idempotency_error_with(error, response)
@@ -25,6 +29,10 @@ module Grape
       end
 
       private
+
+      def thrown_error?(response)
+        response.is_a?(Hash) && response.key?(:message) && response.key?(:status)
+      end
 
       def update_idempotency_error_with(error, response)
         begin
