@@ -37,6 +37,7 @@ gem install grape-idempotency
 - Grape 1.x and 2.x or newer are supported from a single codebase.
 - Grape 1.0 - 1.4 are allowed by the gemspec but are not tested.
 - Grape 1.x does not work with Rack 3, so if you are using Grape 1.x add `gem 'rack', '< 3'` to your `Gemfile`.
+- Grape 1.5 does not load with ActiveSupport 7.1, so if you are using Grape 1.5 add `gem 'activesupport', '< 7.1'` to your `Gemfile`.
 
 The tested Ruby and Grape combinations live in the [CI workflow](.github/workflows/ruby.yml): every Grape minor line from 1.5 onwards is tested against every Ruby version it supports, plus the latest Grape release on the newest Ruby. To run the specs against a specific Grape line locally, set `GRAPE_VERSION` (this rewrites your local `Gemfile.lock`, do not commit it):
 
