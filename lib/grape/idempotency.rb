@@ -72,7 +72,7 @@ module Grape
 
         if is_an_error?(response)
           log(:debug, "An error response was returned by the performed block. => #{response}")
-          response = response[:message]
+          response = response.is_a?(Hash) ? response[:message] : response.message
         end
 
         grape.header(ORIGINAL_REQUEST_HEADER, original_request_id)
@@ -239,6 +239,9 @@ module Grape
       end
 
       def is_an_error?(response)
+        # grape >= 3.3 throws Grape::Exceptions::ErrorResponse instead of a Hash
+        return true if defined?(Grape::Exceptions::ErrorResponse) && response.is_a?(Grape::Exceptions::ErrorResponse)
+
         response.is_a?(Hash) && response.has_key?(:message) && response.has_key?(:headers) && response.has_key?(:status)
       end
 

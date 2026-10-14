@@ -5,9 +5,11 @@ module Grape
     class Error < Base
       def run_rescue_handler(handler, error, endpoint=nil)
         if handler.instance_of?(Symbol)
-          raise NoMethodError, "undefined method '#{handler}'" unless respond_to?(handler)
+          # grape >= 3.0 resolves symbol handlers (`rescue_from ..., with: :helper`) on the endpoint
+          handler_owner = respond_to?(handler) || endpoint.nil? ? self : endpoint
+          raise NoMethodError, "undefined method '#{handler}'" unless handler_owner.respond_to?(handler)
 
-          handler = public_method(handler)
+          handler = handler_owner.public_method(handler)
         end
 
         response = catch(:error) do
@@ -24,14 +26,18 @@ module Grape
           update_idempotency_error_with(error, response)
           response
         else
-          run_rescue_handler(:default_rescue_handler, Grape::Exceptions::InvalidResponse.new)
+          # default_rescue_handler is private since grape 2.1
+          run_rescue_handler(method(:default_rescue_handler), Grape::Exceptions::InvalidResponse.new, endpoint)
         end
       end
 
       private
 
       def thrown_error?(response)
-        response.is_a?(Hash) && response.key?(:message) && response.key?(:status)
+        # grape >= 3.3 throws Grape::Exceptions::ErrorResponse instead of a Hash
+        return true if defined?(Grape::Exceptions::ErrorResponse) && response.is_a?(Grape::Exceptions::ErrorResponse)
+
+        response.is_a?(Hash) && response.key?(:message) && response.key?(:status) && response.key?(:headers)
       end
 
       def update_idempotency_error_with(error, response)

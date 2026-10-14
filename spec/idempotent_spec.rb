@@ -87,13 +87,13 @@ describe Grape::Idempotency do
                 header "idempotency-key", idempotency_key
                 header "x-request-id", original_request_id
                 post 'payments?locale=es', { amount: 100_00 }.to_json
-                expect(last_response.headers).to include("original-request" => original_request_id)
+                expect(last_response.headers["original-request"]).to eq(original_request_id)
                 expect(last_response.headers).to include("idempotency-key" => idempotency_key)
 
                 header "idempotency-key", idempotency_key
                 header "x-request-id", 'another-request-id'
                 post 'payments?locale=es', { amount: 100_00 }.to_json
-                expect(last_response.headers).to include("original-request" => original_request_id)
+                expect(last_response.headers["original-request"]).to eq(original_request_id)
                 expect(last_response.headers).to include("idempotency-key" => idempotency_key)
               end
 
@@ -110,12 +110,12 @@ describe Grape::Idempotency do
 
                   header "idempotency-key", idempotency_key
                   post 'payments?locale=es', { amount: 100_00 }.to_json
-                  expect(last_response.headers).to include("original-request" => "req_123456")
+                  expect(last_response.headers["original-request"]).to eq("req_123456")
 
                   header "idempotency-key", idempotency_key
                   header "x-request-id", 'another-request-id'
                   post 'payments?locale=es', { amount: 100_00 }.to_json
-                  expect(last_response.headers).to include("original-request" => "req_123456")
+                  expect(last_response.headers["original-request"]).to eq("req_123456")
                 end
               end
 
@@ -133,12 +133,12 @@ describe Grape::Idempotency do
                   header "idempotency-key", idempotency_key
                   post 'payments?locale=es', { amount: 100_00 }.to_json
                   expect(last_response.status).to eq(200)
-                  expect(last_response.body).to eq("{:amount_to=>1}")
+                  expect(last_response.body).to eq({ amount_to: 1 }.inspect)
 
                   header "idempotency-key", idempotency_key
                   post 'payments?locale=es', { amount: 100_00 }.to_json
                   expect(last_response.status).to eq(200)
-                  expect(last_response.body).to eq("{\"amount_to\"=>1}")
+                  expect(last_response.body).to eq({ "amount_to" => 1 }.inspect)
                 end
               end
             end
@@ -268,12 +268,12 @@ describe Grape::Idempotency do
                 header "idempotency-key", idempotency_key
                 post 'payments?locale=es', { amount: 100_00 }.to_json
                 expect(last_response.status).to eq(500)
-                expect(last_response.body).to eq("{:error=>\"Internal Server Error\", :message=>\"Unexpected error\"}")
+                expect(last_response.body).to eq({ error: "Internal Server Error", message: "Unexpected error" }.inspect)
 
                 header "idempotency-key", idempotency_key
                 post 'payments?locale=es', { amount: 100_00 }.to_json
                 expect(last_response.status).to eq(500)
-                expect(last_response.body).to eq("{\"error\"=>\"Internal Server Error\", \"message\"=>\"Unexpected error\"}")
+                expect(last_response.body).to eq({ "error" => "Internal Server Error", "message" => "Unexpected error" }.inspect)
               end
             end
 
@@ -304,7 +304,82 @@ describe Grape::Idempotency do
                 header "idempotency-key", idempotency_key
                 post 'payments?locale=es', { amount: 100_00 }.to_json
                 expect(last_response.status).to eq(404)
-                expect(last_response.body).to eq("{\"message\"=>\"Not found error\"}")
+                expect(last_response.body).to eq({ "message" => "Not found error" }.inspect)
+              end
+            end
+
+            context 'and a managed exception using grape rescue_from with a helper method appears executing the code' do
+              it 'stores the exception response and returns the same response in the second call' do
+                app.error_formatter :txt, Grape::ErrorFormatter::Json
+                allow(SecureRandom).to receive(:random_number).and_return(1, 2)
+
+                app.helpers do
+                  def handle_not_found(e)
+                    error!({ message: "Not found error" }, 404)
+                  end
+                end
+
+                app.rescue_from StandardError, with: :handle_not_found
+
+                app.post('/payments') do
+                  idempotent do
+                    raise "Not found error error" if SecureRandom.random_number == 1
+                    status 200
+                    { amount_to: 100_00 }.to_json
+                  end
+                end
+
+                header "idempotency-key", idempotency_key
+                post 'payments?locale=es', { amount: 100_00 }.to_json
+                expect(last_response.status).to eq(404)
+                expect(last_response.body).to eq("{\"message\":\"Not found error\"}")
+
+                header "idempotency-key", idempotency_key
+                post 'payments?locale=es', { amount: 100_00 }.to_json
+                expect(last_response.status).to eq(404)
+                expect(last_response.body).to eq({ "message" => "Not found error" }.inspect)
+              end
+            end
+
+            context 'and a grape rescue_from handler does NOT return a valid response' do
+              before do
+                app.error_formatter :txt, Grape::ErrorFormatter::Json
+              end
+
+              def define_failing_endpoint
+                app.post('/payments') do
+                  idempotent do
+                    raise "Unexpected error"
+                  end
+                end
+              end
+
+              it 'returns the grape invalid response error' do
+                app.rescue_from StandardError do |e|
+                  "not a rack response"
+                end
+
+                define_failing_endpoint
+
+                header "idempotency-key", idempotency_key
+                post 'payments?locale=es', { amount: 100_00 }.to_json
+                expect(last_response.status).to eq(500)
+                expect(last_response.body).to include("Invalid response")
+              end
+
+              context 'because it returns a hash with message and status but without headers' do
+                it 'returns the grape invalid response error' do
+                  app.rescue_from StandardError do |e|
+                    { message: "Not found error", status: 404 }
+                  end
+
+                  define_failing_endpoint
+
+                  header "idempotency-key", idempotency_key
+                  post 'payments?locale=es', { amount: 100_00 }.to_json
+                  expect(last_response.status).to eq(500)
+                  expect(last_response.body).to include("Invalid response")
+                end
               end
             end
 
@@ -504,7 +579,7 @@ describe Grape::Idempotency do
 
         header "x-custom-idempotency-key", idempotency_key
         post 'payments?locale=undefined', { amount: 100_00 }.to_json
-        expect(last_response.headers).to include("original-request" => "wadus")
+        expect(last_response.headers["original-request"]).to eq("wadus")
       end
 
       it 'returns the key using the configured header name in the response headers' do
@@ -550,7 +625,7 @@ describe Grape::Idempotency do
         header "idempotency-key", idempotency_key
         header "x-custom-request-id-key", "another-one"
         post 'payments?locale=undefined', { amount: 100_00 }.to_json
-        expect(last_response.headers).to include("original-request" => "wadus")
+        expect(last_response.headers["original-request"]).to eq("wadus")
       end
     end
 
