@@ -221,20 +221,23 @@ module Grape
         return if error_keys.empty?
 
         error_keys.map do |key|
-          request_with_error = JSON.parse(storage.get(key))
+          raw_request_with_error = storage.get(key)
+          next unless raw_request_with_error
+
+          request_with_error = JSON.parse(raw_request_with_error)
           error_class_name = request_with_error["error"]["class_name"]
           error_message = request_with_error["error"]["message"]
-          
+
           if error_class_name == error.class.to_s && error_message == error.message
             {
               error_key: key,
               request: request_with_error,
-              idempotency_key: key.gsub(error_key_prefix, '')
+              idempotency_key: key.delete_prefix(error_key_prefix)
             }
           end
-        end.first
-      rescue Redis::BaseError => e
-        log(:error, "Storage error => #{e.message} - #{e}")
+        end.compact.first
+      rescue Redis::BaseError, JSON::ParserError, TypeError => e
+        log(:error, "Error retrieving stored error request => #{e.message} - #{e}")
         nil
       end
 

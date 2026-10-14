@@ -505,6 +505,62 @@ describe Grape::Idempotency do
     end
   end
 
+  describe '.update_error_with_rescue_from_result' do
+    let(:storage) do
+      MockRedis.new
+    end
+
+    let(:error) { RuntimeError.new("Not found error") }
+
+    before do
+      Grape::Idempotency.configure do |c|
+        c.storage = storage
+      end
+    end
+
+    def stored_error_body(error_class_name, error_message)
+      {
+        path: "/payments",
+        params: { "amount" => 100_00 },
+        status: 500,
+        original_request: "req_1",
+        error: { class_name: error_class_name, message: error_message }
+      }.to_json
+    end
+
+    context 'when no error key is given' do
+      it 'finds the matching stored error even if it is not the first error key' do
+        storage.set("grape:idempotency:error:first", stored_error_body("ArgumentError", "Other error"))
+        storage.set("grape:idempotency:error:second", stored_error_body("RuntimeError", "Not found error"))
+        allow(storage).to receive(:keys).and_return(["grape:idempotency:error:first", "grape:idempotency:error:second"])
+
+        Grape::Idempotency.update_error_with_rescue_from_result(error, 404, { "message" => "Not found error" })
+
+        stored_response = JSON.parse(storage.get("grape:idempotency:second"))
+        expect(stored_response["status"]).to eq(404)
+        expect(stored_response["response"]).to eq({ "message" => "Not found error" })
+        expect(storage.get("grape:idempotency:error:second")).to be_nil
+        expect(storage.get("grape:idempotency:error:first")).not_to be_nil
+      end
+
+      it 'does NOT raise when an error key expires between listing and reading it' do
+        allow(storage).to receive(:keys).and_return(["grape:idempotency:error:expired"])
+
+        expect {
+          Grape::Idempotency.update_error_with_rescue_from_result(error, 404, { "message" => "Not found error" })
+        }.not_to raise_error
+      end
+
+      it 'does NOT raise when a stored error is not valid JSON' do
+        storage.set("grape:idempotency:error:corrupted", "not json")
+
+        expect {
+          Grape::Idempotency.update_error_with_rescue_from_result(error, 404, { "message" => "Not found error" })
+        }.not_to raise_error
+      end
+    end
+  end
+
   context 'configuration' do
     let(:storage) do
       MockRedis.new
