@@ -1,4 +1,5 @@
 require 'spec_helper'
+require 'tempfile'
 
 describe Grape::Idempotency do
   let(:app) do
@@ -6,6 +7,18 @@ describe Grape::Idempotency do
   end
 
   let(:idempotency_key) { "fd77c9d6-b7da-4966-aac8-40ee258f24aa" }
+
+  def response_snapshot
+    {
+      status: last_response.status,
+      body: last_response.body.b,
+      headers: last_response.headers.to_h.map { |name, value| [name.downcase, value] }.sort.to_h
+    }
+  end
+
+  def without_header(snapshot, name)
+    snapshot.merge(headers: snapshot[:headers].reject { |header_name, _| header_name == name })
+  end
 
   context 'helpers' do
     describe 'idempotent' do
@@ -133,12 +146,162 @@ describe Grape::Idempotency do
                   header "idempotency-key", idempotency_key
                   post 'payments?locale=es', { amount: 100_00 }.to_json
                   expect(last_response.status).to eq(200)
-                  expect(last_response.body).to eq({ amount_to: 1 }.inspect)
+                  expect(last_response.body).to eq({ amount_to: 1 }.to_s)
+                  first_response = response_snapshot
 
                   header "idempotency-key", idempotency_key
                   post 'payments?locale=es', { amount: 100_00 }.to_json
-                  expect(last_response.status).to eq(200)
-                  expect(last_response.body).to eq({ "amount_to" => 1 }.inspect)
+                  expect(response_snapshot).to eq(first_response)
+                end
+
+                context 'and the API uses the json format' do
+                  it 'returns the original response' do
+                    allow(SecureRandom).to receive(:random_number).and_return(1, 2)
+                    app.format :json
+
+                    app.post('/payments') do
+                      idempotent do
+                        status 200
+                        { amount_to: SecureRandom.random_number }
+                      end
+                    end
+
+                    header "idempotency-key", idempotency_key
+                    post 'payments?locale=es', { amount: 100_00 }.to_json
+                    expect(last_response.status).to eq(200)
+                    expect(last_response.body).to eq({ amount_to: 1 }.to_json)
+                    first_response = response_snapshot
+
+                    header "idempotency-key", idempotency_key
+                    post 'payments?locale=es', { amount: 100_00 }.to_json
+                    expect(response_snapshot).to eq(first_response)
+                  end
+                end
+              end
+
+              it 'does NOT run the endpoint code placed after the idempotent block' do
+                calls = []
+
+                app.post('/payments') do
+                  result = idempotent do
+                    calls << :block
+                    status 201
+                    { amount_to: 100_00 }.to_json
+                  end
+                  calls << :after_block
+                  result
+                end
+
+                header "idempotency-key", idempotency_key
+                post 'payments?locale=es', { amount: 100_00 }.to_json
+                first_response = response_snapshot
+
+                header "idempotency-key", idempotency_key
+                post 'payments?locale=es', { amount: 100_00 }.to_json
+                expect(response_snapshot).to eq(first_response)
+                expect(calls).to eq([:block, :after_block])
+              end
+
+              context 'and the response includes headers' do
+                it 'returns the original headers' do
+                  app.post('/payments') do
+                    idempotent do
+                      status 201
+                      header 'Location', '/payments/1'
+                      header 'X-Payment-Status', 'created'
+                      { id: 1 }.to_json
+                    end
+                  end
+
+                  header "idempotency-key", idempotency_key
+                  post 'payments?locale=es', { amount: 100_00 }.to_json
+                  expect(last_response.status).to eq(201)
+                  expect(last_response.headers['location']).to eq('/payments/1')
+                  expect(last_response.headers['x-payment-status']).to eq('created')
+                  first_response = response_snapshot
+
+                  header "idempotency-key", idempotency_key
+                  post 'payments?locale=es', { amount: 100_00 }.to_json
+                  expect(response_snapshot).to eq(first_response)
+                end
+
+                it 'does NOT return the Set-Cookie header' do
+                  app.post('/payments') do
+                    idempotent do
+                      status 201
+                      header 'Set-Cookie', 'session=abc'
+                      header 'Location', '/payments/1'
+                      { id: 1 }.to_json
+                    end
+                  end
+
+                  header "idempotency-key", idempotency_key
+                  post 'payments?locale=es', { amount: 100_00 }.to_json
+                  expect(last_response.headers['set-cookie']).to eq('session=abc')
+                  first_response = response_snapshot
+
+                  header "idempotency-key", idempotency_key
+                  post 'payments?locale=es', { amount: 100_00 }.to_json
+                  expect(last_response.headers['set-cookie']).to be_nil
+                  expect(response_snapshot).to eq(without_header(first_response, 'set-cookie'))
+                end
+              end
+
+              context 'and the response body is binary' do
+                it 'returns the original body' do
+                  binary_body = "\xFF\xFE\x00binary".b
+
+                  app.post('/payments') do
+                    idempotent do
+                      status 201
+                      env['api.format'] = :binary
+                      content_type 'application/octet-stream'
+                      binary_body
+                    end
+                  end
+
+                  header "idempotency-key", idempotency_key
+                  post 'payments?locale=es', { amount: 100_00 }.to_json
+                  expect(last_response.status).to eq(201)
+                  expect(last_response.body.b).to eq(binary_body)
+                  first_response = response_snapshot
+
+                  stored_request = JSON.parse(storage.get("grape:idempotency:#{idempotency_key}"))
+                  expect(stored_request["body_encoding"]).to eq("base64")
+                  expect(stored_request).not_to have_key("response")
+
+                  header "idempotency-key", idempotency_key
+                  post 'payments?locale=es', { amount: 100_00 }.to_json
+                  expect(response_snapshot).to eq(first_response)
+                  expect(last_response.headers['content-type']).to eq('application/octet-stream')
+                end
+              end
+
+              context 'and the original response was stored by a previous version of the gem' do
+                it 'returns the stored response' do
+                  app.format :json
+
+                  app.post('/payments') do
+                    idempotent do
+                      status 200
+                      { amount_to: SecureRandom.random_number }
+                    end
+                  end
+
+                  storage.set("grape:idempotency:#{idempotency_key}", {
+                    path: '/payments',
+                    params: { 'locale' => 'es', '{"amount":10000}' => nil },
+                    status: 201,
+                    original_request: 'wadus',
+                    response: { 'amount_to' => 1 }
+                  }.to_json)
+
+                  header "idempotency-key", idempotency_key
+                  post 'payments?locale=es', { amount: 100_00 }.to_json
+                  expect(last_response.status).to eq(201)
+                  expect(last_response.body).to eq({ amount_to: 1 }.to_json)
+                  expect(last_response.headers['original-request']).to eq('wadus')
+                  expect(last_response.headers).to include("idempotency-key" => idempotency_key)
                 end
               end
             end
@@ -223,6 +386,11 @@ describe Grape::Idempotency do
                 expect(json_body).not_to have_key(:params)
                 expect(json_body[:params_digest]).to match(/\A\h{64}\z/)
                 expect(json_body[:status]).to eq(500)
+                expect(json_body[:v]).to eq(2)
+                expect(json_body[:body]).to eq(expected_response_body.to_json)
+                expect(json_body[:body_encoding]).to eq("utf8")
+                expect(json_body[:headers].map { |name, value| [name.to_s.downcase, value] }.to_h).to include("content-type" => "text/plain")
+                expect(json_body[:original_request]).to be_a(String)
                 expect(json_body[:response]).to eq(expected_response_body.to_json)
                 expect(opts).to eq({ex: 216_000, nx: false})
               end
@@ -230,6 +398,97 @@ describe Grape::Idempotency do
 
               header "idempotency-key", idempotency_key
               post 'payments?locale=undefined', { amount: 100_00 }.to_json
+            end
+
+            it 'stores the parsed body as response for previous versions of the gem when the response is json' do
+              app.format :json
+
+              app.post('/payments') do
+                idempotent do
+                  status 201
+                  { id: 1, items: [{ amount: 100_00 }] }
+                end
+              end
+
+              header "idempotency-key", idempotency_key
+              post 'payments?locale=es', { amount: 100_00 }.to_json
+              expect(last_response.status).to eq(201)
+
+              stored_request = JSON.parse(storage.get("grape:idempotency:#{idempotency_key}"))
+              expect(stored_request["v"]).to eq(2)
+              expect(stored_request["body"]).to eq({ id: 1, items: [{ amount: 100_00 }] }.to_json)
+              expect(stored_request["response"]).to eq({ "id" => 1, "items" => [{ "amount" => 100_00 }] })
+            end
+
+            context 'and the response body is a file' do
+              it 'does NOT store the response and releases the idempotency key' do
+                file = Tempfile.new('payment')
+                file.write('receipt')
+                file.flush
+                calls = []
+
+                app.post('/payments') do
+                  idempotent do
+                    calls << :block
+                    sendfile file.path
+                  end
+                end
+
+                header "idempotency-key", idempotency_key
+                post 'payments?locale=es', { amount: 100_00 }.to_json
+                expect(last_response.body).to eq('receipt')
+                expect(storage.get("grape:idempotency:#{idempotency_key}")).to be_nil
+
+                header "idempotency-key", idempotency_key
+                post 'payments?locale=es', { amount: 100_00 }.to_json
+                expect(last_response.body).to eq('receipt')
+                expect(calls).to eq([:block, :block])
+              ensure
+                file.close!
+              end
+            end
+
+            context 'and the response body is a stream' do
+              it 'does NOT store the response and releases the idempotency key' do
+                streamed_body = Class.new do
+                  def each
+                    yield 'receipt'
+                  end
+                end
+
+                app.post('/payments') do
+                  idempotent do
+                    stream streamed_body.new
+                  end
+                end
+
+                header "idempotency-key", idempotency_key
+                post 'payments?locale=es', { amount: 100_00 }.to_json
+                expect(last_response.body).to eq('receipt')
+                expect(storage.get("grape:idempotency:#{idempotency_key}")).to be_nil
+              end
+            end
+
+            context 'and the response can NOT be stored' do
+              it 'returns the response anyway' do
+                allow(Grape::Idempotency).to receive(:store_request_response).and_raise(StandardError, "unexpected")
+                allow(Grape::Idempotency).to receive(:log)
+                expect(Grape::Idempotency).to receive(:log).with(:error, /could NOT be stored/)
+
+                app.post('/payments') do
+                  idempotent do
+                    status 201
+                    header 'Location', '/payments/1'
+                    { id: 1 }.to_json
+                  end
+                end
+
+                header "idempotency-key", idempotency_key
+                post 'payments?locale=es', { amount: 100_00 }.to_json
+                expect(last_response.status).to eq(201)
+                expect(last_response.body).to eq({ id: 1 }.to_json)
+                expect(last_response.headers['location']).to eq('/payments/1')
+              end
             end
 
             context 'but is no possible to store the request as processing' do
@@ -270,12 +529,31 @@ describe Grape::Idempotency do
                 header "idempotency-key", idempotency_key
                 post 'payments?locale=es', { amount: 100_00 }.to_json
                 expect(last_response.status).to eq(500)
-                expect(last_response.body).to eq({ error: "Internal Server Error", message: "Unexpected error" }.inspect)
+                expect(last_response.body).to include("Unexpected error")
+                first_response = response_snapshot
 
                 header "idempotency-key", idempotency_key
                 post 'payments?locale=es', { amount: 100_00 }.to_json
-                expect(last_response.status).to eq(500)
-                expect(last_response.body).to eq({ "error" => "Internal Server Error", "message" => "Unexpected error" }.inspect)
+                expect(response_snapshot).to eq(first_response)
+              end
+
+              it 'returns the headers provided to error! in the first and in the second call' do
+                app.post('/payments') do
+                  idempotent do
+                    error!({ error: 'Payment rejected' }, 402, { 'X-Rejection-Reason' => 'insufficient-funds' })
+                  end
+                end
+
+                header "idempotency-key", idempotency_key
+                post 'payments?locale=es', { amount: 100_00 }.to_json
+                expect(last_response.status).to eq(402)
+                expect(last_response.headers['x-rejection-reason']).to eq('insufficient-funds')
+                expect(last_response.headers).to include("idempotency-key" => idempotency_key)
+                first_response = response_snapshot
+
+                header "idempotency-key", idempotency_key
+                post 'payments?locale=es', { amount: 100_00 }.to_json
+                expect(response_snapshot).to eq(first_response)
               end
             end
 
@@ -302,11 +580,36 @@ describe Grape::Idempotency do
                 post 'payments?locale=es', { amount: 100_00 }.to_json
                 expect(last_response.status).to eq(404)
                 expect(last_response.body).to eq("{\"message\":\"Not found error\"}")
+                expect(last_response.headers).to include("idempotency-key" => idempotency_key)
+                first_response = response_snapshot
+
+                header "idempotency-key", idempotency_key
+                post 'payments?locale=es', { amount: 100_00 }.to_json
+                expect(response_snapshot).to eq(first_response)
+              end
+
+              it 'returns the headers provided by the rescue_from handler in the first and in the second call' do
+                app.error_formatter :txt, Grape::ErrorFormatter::Json
+
+                app.rescue_from StandardError do |e|
+                  error!({ message: "Not found error" }, 404, { 'X-Error-Code' => 'not-found' })
+                end
+
+                app.post('/payments') do
+                  idempotent do
+                    raise "Not found error error"
+                  end
+                end
 
                 header "idempotency-key", idempotency_key
                 post 'payments?locale=es', { amount: 100_00 }.to_json
                 expect(last_response.status).to eq(404)
-                expect(last_response.body).to eq({ "message" => "Not found error" }.inspect)
+                expect(last_response.headers['x-error-code']).to eq('not-found')
+                first_response = response_snapshot
+
+                header "idempotency-key", idempotency_key
+                post 'payments?locale=es', { amount: 100_00 }.to_json
+                expect(response_snapshot).to eq(first_response)
               end
             end
 
@@ -335,11 +638,11 @@ describe Grape::Idempotency do
                 post 'payments?locale=es', { amount: 100_00 }.to_json
                 expect(last_response.status).to eq(404)
                 expect(last_response.body).to eq("{\"message\":\"Not found error\"}")
+                first_response = response_snapshot
 
                 header "idempotency-key", idempotency_key
                 post 'payments?locale=es', { amount: 100_00 }.to_json
-                expect(last_response.status).to eq(404)
-                expect(last_response.body).to eq({ "message" => "Not found error" }.inspect)
+                expect(response_snapshot).to eq(first_response)
               end
             end
 
@@ -392,29 +695,6 @@ describe Grape::Idempotency do
                   expect(last_response.status).to eq(500)
                   expect(last_response.body).to include("Invalid response")
                 end
-              end
-            end
-
-            context 'and the stored error request disappears before the rescue_from handler finishes' do
-              it 'keeps the rescue_from response' do
-                app.error_formatter :txt, Grape::ErrorFormatter::Json
-                app.rescue_from StandardError do |e|
-                  error!({ message: "Not found error" }, 404)
-                end
-
-                app.post('/payments') do
-                  idempotent do
-                    raise "Not found error"
-                  end
-                end
-
-                allow(storage).to receive(:get).and_call_original
-                allow(storage).to receive(:get).with("grape:idempotency:error:#{idempotency_key}").and_return(nil)
-
-                header "idempotency-key", idempotency_key
-                post 'payments', { amount: 100_00 }.to_json
-                expect(last_response.status).to eq(404)
-                expect(last_response.body).to eq("{\"message\":\"Not found error\"}")
               end
             end
 
@@ -553,6 +833,118 @@ describe Grape::Idempotency do
     end
   end
 
+  context 'when the API adds its own Grape::Middleware::Error with a custom json error formatter' do
+    let(:storage) { MockRedis.new }
+
+    let(:unauthorized_error) { Class.new(StandardError) }
+    let(:unhandled_error) { Class.new(StandardError) }
+
+    let(:custom_error_formatter) do
+      Class.new do
+        # grape >= 3.3 calls error formatters with keyword arguments (error:, env:, ...)
+        def self.call(*args)
+          first = args.first
+          message = first.is_a?(Hash) && first.key?(:error) ? first[:error].message : first
+          { errors: [{ detail: message }] }.to_json
+        end
+      end
+    end
+
+    let(:payment_entity) do
+      Class.new do
+        def self.represent(payment, _options = {})
+          { id: payment[:id], amount: payment[:amount], status: 'created' }
+        end
+      end
+    end
+
+    before do
+      Grape::Idempotency.configure do |c|
+        c.storage = storage
+      end
+
+      error_formatter = custom_error_formatter
+      app.use Grape::Middleware::Error,
+        rescue_all: false,
+        error_formatters: { serializable_hash: error_formatter, json: error_formatter, jsonapi: error_formatter }
+      app.format :json
+
+      unauthorized = unauthorized_error
+      app.rescue_from(unauthorized) { |e| error!({ message: 'Unauthorized' }, 401) }
+    end
+
+    def perform_twice_and_expect_same_response
+      expect(storage).to receive(:set).twice.and_call_original
+
+      header "idempotency-key", idempotency_key
+      header "x-request-id", "original-request-id"
+      post 'payments', { amount: 100_00 }
+      first_response = response_snapshot
+      expect(last_response.headers['original-request']).to eq('original-request-id')
+      expect(last_response.headers).to include("idempotency-key" => idempotency_key)
+
+      header "idempotency-key", idempotency_key
+      header "x-request-id", "another-request-id"
+      post 'payments', { amount: 100_00 }
+      expect(response_snapshot).to eq(first_response)
+
+      first_response
+    end
+
+    it 'stores the presented entity once and replays it' do
+      entity = payment_entity
+      app.post('/payments') do
+        idempotent do
+          payment = { id: 1, amount: params[:amount].to_i }
+          present payment, with: entity
+        end
+      end
+
+      first_response = perform_twice_and_expect_same_response
+      expect(first_response[:status]).to eq(201)
+      expect(first_response[:body]).to eq({ id: 1, amount: 100_00, status: 'created' }.to_json)
+    end
+
+    it 'stores the response of a custom exception handled by rescue_from once and replays it' do
+      unauthorized = unauthorized_error
+      app.post('/payments') do
+        idempotent do
+          raise unauthorized
+        end
+      end
+
+      first_response = perform_twice_and_expect_same_response
+      expect(first_response[:status]).to eq(401)
+      expect(JSON.parse(first_response[:body])).to include("message" => "Unauthorized")
+    end
+
+    it 'stores the response of error! once and replays it' do
+      app.post('/payments') do
+        idempotent do
+          error!('Invalid request body', 422)
+        end
+      end
+
+      first_response = perform_twice_and_expect_same_response
+      expect(first_response[:status]).to eq(422)
+      expect(first_response[:body]).to eq({ errors: [{ detail: 'Invalid request body' }] }.to_json)
+    end
+
+    it 'propagates an exception NOT handled by any rescue_from' do
+      unhandled = unhandled_error
+      app.post('/payments') do
+        idempotent do
+          raise unhandled, 'unexpected'
+        end
+      end
+
+      expect {
+        header "idempotency-key", idempotency_key
+        post 'payments', { amount: 100_00 }
+      }.to raise_error(unhandled, 'unexpected')
+    end
+  end
+
   context 'endpoints without idempotency' do
     let(:storage) do
       MockRedis.new
@@ -584,82 +976,6 @@ describe Grape::Idempotency do
         get 'orders'
         expect(last_response.status).to eq(404)
         expect(last_response.body).to eq("{\"message\":\"Not found error\"}")
-      end
-    end
-  end
-
-  describe '.update_error_with_rescue_from_result' do
-    let(:storage) do
-      MockRedis.new
-    end
-
-    let(:error) { RuntimeError.new("Not found error") }
-
-    before do
-      Grape::Idempotency.configure do |c|
-        c.storage = storage
-      end
-    end
-
-    def stored_error_body(error_class_name, error_message)
-      {
-        path: "/payments",
-        params: { "amount" => 100_00 },
-        status: 500,
-        original_request: "req_1",
-        error: { class_name: error_class_name, message: error_message }
-      }.to_json
-    end
-
-    context 'when no error key is given' do
-      it 'finds the matching stored error even if it is not the first error key' do
-        storage.set("grape:idempotency:error:first", stored_error_body("ArgumentError", "Other error"))
-        storage.set("grape:idempotency:error:second", stored_error_body("RuntimeError", "Not found error"))
-        allow(storage).to receive(:keys).and_return(["grape:idempotency:error:first", "grape:idempotency:error:second"])
-
-        Grape::Idempotency.update_error_with_rescue_from_result(error, 404, { "message" => "Not found error" })
-
-        stored_response = JSON.parse(storage.get("grape:idempotency:second"))
-        expect(stored_response["status"]).to eq(404)
-        expect(stored_response["response"]).to eq({ "message" => "Not found error" })
-        expect(storage.get("grape:idempotency:error:second")).to be_nil
-        expect(storage.get("grape:idempotency:error:first")).not_to be_nil
-      end
-
-      it 'does NOT raise when an error key expires between listing and reading it' do
-        allow(storage).to receive(:keys).and_return(["grape:idempotency:error:expired"])
-
-        expect {
-          Grape::Idempotency.update_error_with_rescue_from_result(error, 404, { "message" => "Not found error" })
-        }.not_to raise_error
-      end
-
-      it 'does NOT raise when a stored error is not valid JSON' do
-        storage.set("grape:idempotency:error:corrupted", "not json")
-
-        expect {
-          Grape::Idempotency.update_error_with_rescue_from_result(error, 404, { "message" => "Not found error" })
-        }.not_to raise_error
-      end
-    end
-
-    context 'when an error key is given' do
-      it 'reads only that key without listing the storage keys' do
-        storage.set("grape:idempotency:error:#{idempotency_key}", stored_error_body("RuntimeError", "Not found error"))
-        expect(storage).not_to receive(:keys)
-
-        Grape::Idempotency.update_error_with_rescue_from_result(error, 404, { "message" => "Not found error" }, error_key: "grape:idempotency:error:#{idempotency_key}")
-
-        stored_response = JSON.parse(storage.get("grape:idempotency:#{idempotency_key}"))
-        expect(stored_response["status"]).to eq(404)
-        expect(storage.get("grape:idempotency:error:#{idempotency_key}")).to be_nil
-      end
-
-      it 'does NOT raise when the error key has expired' do
-        expect {
-          Grape::Idempotency.update_error_with_rescue_from_result(error, 404, { "message" => "Not found error" }, error_key: "grape:idempotency:error:#{idempotency_key}")
-        }.not_to raise_error
-        expect(storage.get("grape:idempotency:#{idempotency_key}")).to be_nil
       end
     end
   end
@@ -719,19 +1035,25 @@ describe Grape::Idempotency do
       expect(last_response.body).to eq({ amount_to: 1 }.to_json)
     end
 
-    it 'does NOT store the error message of an unexpected error' do
+    it 'does NOT store the request params with the response of a rescue_from handler' do
+      app.error_formatter :txt, Grape::ErrorFormatter::Json
+      app.rescue_from StandardError do |e|
+        error!({ message: "Card declined" }, 402)
+      end
+
       app.post('/payments') do
         idempotent do
-          raise "Card 4242424242424242 declined"
+          raise "Card declined"
         end
       end
 
       header "idempotency-key", idempotency_key
-      expect { post 'payments', { amount: 100_00 } }.to raise_error(RuntimeError)
+      post 'payments', { card_number: "4242424242424242" }
+      expect(last_response.status).to eq(402)
 
-      stored_error = storage.get("grape:idempotency:error:#{idempotency_key}")
-      expect(stored_error).not_to include("4242424242424242")
-      expect(JSON.parse(stored_error)["error"]["message_digest"]).to match(/\A\h{64}\z/)
+      stored_request = storage.get("grape:idempotency:#{idempotency_key}")
+      expect(stored_request).not_to include("4242424242424242")
+      expect(JSON.parse(stored_request)["params_digest"]).to match(/\A\h{64}\z/)
     end
 
     context 'when the request was stored by a previous version with the request params' do
@@ -811,7 +1133,7 @@ describe Grape::Idempotency do
         header "idempotency-key", idempotency_key
         post 'payments', { amount: 100_00 }
 
-        expect(log.string).to include("An error response was returned by the performed block.")
+        expect(log.string).to include("Response stored.")
         expect(log.string).not_to include("4242424242424242")
       end
 
@@ -829,6 +1151,12 @@ describe Grape::Idempotency do
 
         expect(log.string.scan("Stored requests and responses are NOT encrypted").size).to eq(1)
       end
+    end
+  end
+
+  describe '.update_error_with_rescue_from_result' do
+    it 'is kept for backwards compatibility and does nothing' do
+      expect(Grape::Idempotency.update_error_with_rescue_from_result(StandardError.new, 500, "body")).to be_nil
     end
   end
 
@@ -982,7 +1310,7 @@ describe Grape::Idempotency do
         header "idempotency-key", idempotency_key
         post 'payments', { amount: 100_00 }
         expect(last_response.status).to eq(404)
-        expect(last_response.body).to eq({ "message" => "Not found error" }.inspect)
+        expect(last_response.body).to eq("{\"message\":\"Not found error\"}")
       end
 
       context 'when the request was stored before configuring the encryption' do
@@ -1198,6 +1526,53 @@ describe Grape::Idempotency do
         header "x-custom-request-id-key", "another-one"
         post 'payments?locale=undefined', { amount: 100_00 }.to_json
         expect(last_response.headers["original-request"]).to eq("wadus")
+      end
+    end
+
+    describe 'replay_headers_denylist' do
+      before do
+        Grape::Idempotency.configure do |c|
+          c.storage = storage
+          c.replay_headers_denylist = ['X-Session-Token']
+        end
+      end
+
+      it 'does NOT return the configured headers when replaying the original response' do
+        app.post('/payments') do
+          idempotent do
+            status 201
+            header 'x-session-token', 'abc'
+            header 'Location', '/payments/1'
+            { id: 1 }.to_json
+          end
+        end
+
+        header "idempotency-key", idempotency_key
+        post 'payments?locale=es', { amount: 100_00 }.to_json
+        expect(last_response.headers['x-session-token']).to eq('abc')
+        first_response = response_snapshot
+
+        header "idempotency-key", idempotency_key
+        post 'payments?locale=es', { amount: 100_00 }.to_json
+        expect(last_response.headers['x-session-token']).to be_nil
+        expect(response_snapshot).to eq(without_header(first_response, 'x-session-token'))
+      end
+
+      it 'keeps excluding the Set-Cookie header' do
+        app.post('/payments') do
+          idempotent do
+            status 201
+            header 'Set-Cookie', 'session=abc'
+            { id: 1 }.to_json
+          end
+        end
+
+        header "idempotency-key", idempotency_key
+        post 'payments?locale=es', { amount: 100_00 }.to_json
+
+        header "idempotency-key", idempotency_key
+        post 'payments?locale=es', { amount: 100_00 }.to_json
+        expect(last_response.headers['set-cookie']).to be_nil
       end
     end
 

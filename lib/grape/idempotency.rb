@@ -7,19 +7,29 @@ require 'json'
 require 'grape/idempotency/version'
 require 'grape/idempotency/encryptor'
 require 'grape/idempotency/middleware/error'
+require 'grape/idempotency/middleware/response_capture'
 
 module Grape
   module Idempotency
     autoload :Helpers, 'grape/idempotency/helpers'
     Grape::Endpoint.send :include, Grape::Idempotency::Helpers
 
-    ERROR_KEY_ENV = "grape.idempotency.error_key".freeze
     ENCRYPTED_RECORD_PREFIX = "encrypted:v1:".freeze
 
     class UnreadableRecordError < StandardError; end
 
     class << self
       ORIGINAL_REQUEST_HEADER = "Original-Request".freeze
+      STORAGE_SCHEMA_VERSION = 2
+      BODY_ENCODING_UTF8 = "utf8".freeze
+      BODY_ENCODING_BASE64 = "base64".freeze
+      PENDING_ENV_KEY = "grape.idempotency.pending".freeze
+      REPLAY_ENV_KEY = "grape.idempotency.replay".freeze
+      # Response headers that are never stored nor replayed
+      EXCLUDED_REPLAY_HEADERS = %w[
+        set-cookie connection keep-alive proxy-connection transfer-encoding te trailer upgrade
+        content-length date age via server-timing x-runtime original-request
+      ].freeze
 
       def configure(&block)
         yield(configuration)
@@ -62,8 +72,13 @@ module Grape
         elsif stored_request && stored_request["processing"] == true
           log(:debug, "Returning processing error response.")
           grape.error!(configuration.processing_response, 409)
-        elsif stored_request
+        elsif stored_request && stored_request["v"].to_i >= STORAGE_SCHEMA_VERSION
           log(:debug, "Returning the response from the original request.")
+          # Stop the endpoint here. The stored response replaces Grape's response in #finalize_response.
+          grape.env[REPLAY_ENV_KEY] = { idempotency_key: idempotency_key, stored_request: stored_request }
+          grape.error!('', stored_request["status"])
+        elsif stored_request
+          log(:debug, "Returning the response from the original request (stored by a previous version of the gem).")
           grape.status stored_request["status"]
           grape.header(ORIGINAL_REQUEST_HEADER, stored_request["original_request"])
           grape.header(configuration.idempotency_key_header, idempotency_key)
@@ -81,67 +96,60 @@ module Grape
           log(:debug, "Request stored as processing.")
         end
 
-        log(:debug, "Performing the provided block.")
-
-        response = catch(:error) do
-          block.call
-        end
-
-        log(:debug, "Block has been performed.")
-
-        if is_an_error?(response)
-          log(:debug, "An error response was returned by the performed block.")
-          response = response.is_a?(Hash) ? response[:message] : response.message
-        end
-
+        # The final response (formatted body, status and headers) is stored by #finalize_response,
+        # once Grape has built it, both for the success path and for the rescue_from path.
+        grape.env[PENDING_ENV_KEY] = {
+          idempotency_key: idempotency_key,
+          path: grape.request.path,
+          params_digest: request_params_digest,
+          original_request: original_request_id
+        }
         grape.header(ORIGINAL_REQUEST_HEADER, original_request_id)
-        grape.body response
-      rescue Redis::BaseError => e
-        raise
-      rescue => e
-        log(:debug, "An unexpected error was raised when performing the block.")
-        if idempotency_key && !stored_request && !response
-          validate_config!
-          log(:debug, "Storing error response.")
-          original_request_id = get_request_id(grape.request.headers)
-          stored_key = store_error_request(idempotency_key, grape.request.path, params_digest(grape.request.params), grape.status, original_request_id, e)
-          if stored_key
-            log(:debug, "Error response stored.")
-            grape.env[ERROR_KEY_ENV] = error_key(stored_key)
-            grape.header(ORIGINAL_REQUEST_HEADER, original_request_id)
-            grape.header(configuration.idempotency_key_header, stored_key)
-          end
-        end
-        log(:debug, "Re-raising the error.")
-        raise
-      ensure
-        if !stored_request && response
-          validate_config!
-          log(:debug, "Storing response.")
-          stored_key = store_request_response(idempotency_key, grape.request.path, request_params_digest, grape.status, original_request_id, response)
-          if stored_key
-            log(:debug, "Response stored.")
-            grape.header(configuration.idempotency_key_header, stored_key)
-          end
-        end
+        grape.header(configuration.idempotency_key_header, idempotency_key)
+
+        log(:debug, "Performing the provided block.")
+        block.call
       end
 
-      def update_error_with_rescue_from_result(error, status, response, error_key: nil)
-        validate_config!
+      # Called with the final Rack response of an endpoint (see Grape::Idempotency::ResponseCapture).
+      # Stores it for a pending idempotent request, or replaces it with the stored one when replaying.
+      # It never raises: on any failure the original response is returned.
+      def finalize_response(env, response)
+        replay = env.delete(REPLAY_ENV_KEY)
+        pending = env.delete(PENDING_ENV_KEY)
+        return response unless replay || pending
 
-        stored_error = error_key ? get_error_request_by_key(error_key) : get_error_request_for(error)
-        return unless stored_error
+        parts = rack_response_parts(response)
 
-        request_with_unmanaged_error = stored_error[:request]
-        idempotency_key = stored_error[:idempotency_key]
-        path = request_with_unmanaged_error["path"]
-        request_params_digest = stored_params_digest(request_with_unmanaged_error)
-        original_request_id = request_with_unmanaged_error["original_request"]
+        if replay
+          return response unless parts
 
-        store_request_response(idempotency_key, path, request_params_digest, status, original_request_id, response)
-        storage.del(stored_error[:error_key])
-      rescue Redis::BaseError => e
-        log(:error, "Storage error => #{e.message} - #{e}")
+          log(:debug, "Replaying the stored response.")
+          return replay_response(replay[:stored_request], replay[:idempotency_key], parts[1])
+        end
+
+        if parts.nil? || !storable_body?(parts[2])
+          log(:warn, "The response body of \"#{pending[:path]}\" is a stream or a file. It is NOT stored and its idempotency key is released.")
+          release_idempotency_key(pending[:idempotency_key])
+          return response
+        end
+
+        status, headers, body = parts
+        log(:debug, "Storing response.")
+        store_request_response(pending, status, headers, body.join)
+        log(:debug, "Response stored.")
+
+        set_response_header(headers, ORIGINAL_REQUEST_HEADER, pending[:original_request])
+        set_response_header(headers, configuration.idempotency_key_header, pending[:idempotency_key])
+        response
+      rescue => e
+        log(:error, "The response could NOT be stored or replayed => #{e.class}")
+        response
+      end
+
+      # Kept for backwards compatibility. Responses generated by rescue_from handlers are now
+      # stored by #finalize_response.
+      def update_error_with_rescue_from_result(_error, _status, _response, error_key: nil)
         nil
       end
 
@@ -214,81 +222,92 @@ module Grape
         raise
       end
 
-      def store_request_response(idempotency_key, path, request_params_digest, status, request_id, response)
-        body = {
-          path: path,
-          params_digest: request_params_digest,
-          status: status,
-          original_request: request_id,
-          response: response
+      def store_request_response(pending, status, headers, body)
+        utf8_body = body.dup.force_encoding(Encoding::UTF_8)
+        body_encoding = utf8_body.valid_encoding? ? BODY_ENCODING_UTF8 : BODY_ENCODING_BASE64
+        replayable_headers = replayable_headers(headers)
+
+        stored_response = {
+          v: STORAGE_SCHEMA_VERSION,
+          path: pending[:path],
+          params_digest: pending[:params_digest],
+          status: status.to_i,
+          original_request: pending[:original_request],
+          headers: replayable_headers,
+          body_encoding: body_encoding,
+          body: body_encoding == BODY_ENCODING_UTF8 ? utf8_body : [body].pack('m0')
         }
+        # Read by versions of the gem that do not know the schema above (e.g. during a rolling deploy)
+        stored_response[:response] = legacy_response(replayable_headers, utf8_body) if body_encoding == BODY_ENCODING_UTF8
 
-        storage.set(key(idempotency_key), serialize(body), ex: configuration.expires_in, nx: false)
+        storage.set(key(pending[:idempotency_key]), serialize(stored_response), ex: configuration.expires_in, nx: false)
 
-        idempotency_key
+        pending[:idempotency_key]
       rescue Redis::BaseError => e
         log(:error, "Storage error => #{e.message} - #{e}")
-        idempotency_key
+        pending[:idempotency_key]
       end
 
-      def store_error_request(idempotency_key, path, request_params_digest, status, request_id, error)
-        body = {
-          path: path,
-          params_digest: request_params_digest,
-          status: status,
-          original_request: request_id,
-          error: {
-            class_name: error.class.to_s,
-            message_digest: digest(error.message)
-          }
-        }
-
-        storage.set(error_key(idempotency_key), serialize(body), ex: 30, nx: false)
-
-        idempotency_key
+      def release_idempotency_key(idempotency_key)
+        storage.del(key(idempotency_key))
       rescue Redis::BaseError => e
         log(:error, "Storage error => #{e.message} - #{e}")
-        idempotency_key
-      end
-
-      def get_error_request_by_key(error_key)
-        raw_request_with_error = storage.get(error_key)
-        return unless raw_request_with_error
-
-        {
-          error_key: error_key,
-          request: deserialize(raw_request_with_error),
-          idempotency_key: error_key.delete_prefix(error_key_prefix)
-        }
-      rescue Redis::BaseError, UnreadableRecordError, TypeError => e
-        log(:error, "Error retrieving stored error request => #{e.message} - #{e}")
         nil
       end
 
-      def get_error_request_for(error)
-        error_keys = storage.keys("#{error_key_prefix}*")
-        return if error_keys.empty?
+      def replay_response(stored_request, idempotency_key, headers)
+        headers.keys.each do |name|
+          headers.delete(name) if %w[content-type content-length].include?(name.to_s.downcase)
+        end
+        (stored_request["headers"] || {}).each { |name, value| set_response_header(headers, name, value) }
+        set_response_header(headers, ORIGINAL_REQUEST_HEADER, stored_request["original_request"])
+        set_response_header(headers, configuration.idempotency_key_header, idempotency_key)
 
-        error_keys.map do |key|
-          raw_request_with_error = storage.get(key)
-          next unless raw_request_with_error
+        body = stored_request["body"].to_s
+        body = body.unpack1('m0') if stored_request["body_encoding"] == BODY_ENCODING_BASE64
 
-          request_with_error = deserialize(raw_request_with_error)
-          error_class_name = request_with_error["error"]["class_name"]
-          # Error requests stored by versions < 1.2.0 contain the error message instead of its digest
-          error_message_digest = request_with_error["error"]["message_digest"] || digest(request_with_error["error"]["message"].to_s)
+        [stored_request["status"].to_i, headers, [body]]
+      end
 
-          if error_class_name == error.class.to_s && error_message_digest == digest(error.message)
-            {
-              error_key: key,
-              request: request_with_error,
-              idempotency_key: key.delete_prefix(error_key_prefix)
-            }
-          end
-        end.compact.first
-      rescue Redis::BaseError, UnreadableRecordError, TypeError => e
-        log(:error, "Error retrieving stored error request => #{e.message} - #{e}")
-        nil
+      def rack_response_parts(response)
+        if response.is_a?(Rack::Response)
+          [response.status, response.headers, response.body]
+        elsif response.is_a?(Array) && response.size == 3
+          response
+        end
+      end
+
+      # Streams and files are not buffered, so they cannot be stored
+      def storable_body?(body)
+        body.is_a?(Array) && body.all? { |chunk| chunk.is_a?(String) }
+      end
+
+      def replayable_headers(headers)
+        excluded = excluded_headers
+        headers.each_with_object({}) do |(name, value), replayable|
+          replayable[name.to_s] = value unless excluded.include?(name.to_s.downcase)
+        end
+      end
+
+      def excluded_headers
+        EXCLUDED_REPLAY_HEADERS +
+          [configuration.idempotency_key_header, configuration.request_id_header].map(&:downcase) +
+          Array(configuration.replay_headers_denylist).map { |name| name.to_s.downcase }
+      end
+
+      def legacy_response(headers, body)
+        content_type = headers.find { |name, _| name.downcase == 'content-type' }&.last.to_s
+        return body unless content_type =~ /\bjson\b/i
+
+        JSON.parse(body)
+      rescue JSON::ParserError
+        body
+      end
+
+      def set_response_header(headers, name, value)
+        headers.keys.each { |existing| headers.delete(existing) if existing.to_s.casecmp?(name) }
+        # Rack 3 requires lowercase header names
+        headers[defined?(Rack::Headers) ? name.downcase : name] = value
       end
 
       def serialize(record)
@@ -353,23 +372,8 @@ module Grape
         Digest::SHA256.hexdigest(value)
       end
 
-      def is_an_error?(response)
-        # grape >= 3.3 throws Grape::Exceptions::ErrorResponse instead of a Hash
-        return true if defined?(Grape::Exceptions::ErrorResponse) && response.is_a?(Grape::Exceptions::ErrorResponse)
-
-        response.is_a?(Hash) && response.has_key?(:message) && response.has_key?(:headers) && response.has_key?(:status)
-      end
-
       def key(idempotency_key)
         "#{gem_prefix}#{idempotency_key}"
-      end
-
-      def error_key(idempotency_key)
-        "#{error_key_prefix}#{idempotency_key}"
-      end
-
-      def error_key_prefix
-        "#{gem_prefix}error:"
       end
 
       def gem_prefix
@@ -400,7 +404,7 @@ module Grape
     class Configuration
       attr_accessor :storage, :logger, :logger_level, :logger_prefix, :expires_in, :idempotency_key_header,
         :request_id_header, :conflict_error_response, :processing_response, :mandatory_header_response,
-        :manage_redis_exceptions, :encryption_key, :encryptor
+        :manage_redis_exceptions, :replay_headers_denylist, :encryption_key, :encryptor
 
       class Error < StandardError; end
 
@@ -413,6 +417,7 @@ module Grape
         @idempotency_key_header = "idempotency-key"
         @request_id_header = "x-request-id"
         @manage_redis_exceptions = false
+        @replay_headers_denylist = []
         @encryption_key = nil
         @encryptor = nil
         @conflict_error_response = {
