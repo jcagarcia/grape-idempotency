@@ -10,6 +10,7 @@ Implementation based on the Active Internet-Draft [draft-ietf-httpapi-idempotenc
 Topics covered in this README:
 
 - [Installation](#installation-)
+- [Compatibility](#compatibility-)
 - [Basic Usage](#basic-usage-)
 - [How it works](#how-it-works-)
   - [Making idempotency key header mandatory](#making-idempotency-key-header-mandatory-)
@@ -28,6 +29,20 @@ Ruby 2.6 or newer is required.
 
 ```bash
 gem install grape-idempotency
+```
+
+## Compatibility 🤝
+
+- Ruby 2.6 or newer.
+- Grape 1.x and 2.x or newer are supported from a single codebase.
+- Grape 1.0 - 1.4 are allowed by the gemspec but are not tested.
+- Grape 1.x does not work with Rack 3, so if you are using Grape 1.x add `gem 'rack', '< 3'` to your `Gemfile`.
+- Grape 1.5 does not load with ActiveSupport 7.1.x (7.0 and 7.2+ work). On Ruby 2.7 / 3.0, where 7.1 is the newest installable ActiveSupport, add `gem 'activesupport', '< 7.1'` to your `Gemfile`.
+
+The tested Ruby and Grape combinations live in the [CI workflow](.github/workflows/ruby.yml): pushes and pull requests run the combinations where Ruby or Grape behaviour changes, and a weekly (or manually triggered) run tests every Grape minor line from 1.5 onwards against every Ruby version it supports, plus the latest Grape release on the newest Ruby. To run the specs against a specific Grape line locally, set `GRAPE_VERSION` (this rewrites your local `Gemfile.lock`, do not commit it):
+
+```shell
+GRAPE_VERSION="~> 1.8.0" bundle update grape && bundle exec rspec
 ```
 
 ## Basic Usage 📖
