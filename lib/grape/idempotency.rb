@@ -10,6 +10,8 @@ module Grape
     autoload :Helpers, 'grape/idempotency/helpers'
     Grape::Endpoint.send :include, Grape::Idempotency::Helpers
 
+    ERROR_KEY_ENV = "grape.idempotency.error_key".freeze
+
     class << self
       ORIGINAL_REQUEST_HEADER = "Original-Request".freeze
 
@@ -88,6 +90,7 @@ module Grape
           stored_key = store_error_request(idempotency_key, grape.request.path, grape.request.params, grape.status, original_request_id, e)
           if stored_key
             log(:debug, "Error response stored.")
+            grape.env[ERROR_KEY_ENV] = error_key(stored_key)
             grape.header(ORIGINAL_REQUEST_HEADER, original_request_id)
             grape.header(configuration.idempotency_key_header, stored_key)
           end
@@ -106,10 +109,10 @@ module Grape
         end
       end
 
-      def update_error_with_rescue_from_result(error, status, response)
+      def update_error_with_rescue_from_result(error, status, response, error_key: nil)
         validate_config!
 
-        stored_error = get_error_request_for(error)
+        stored_error = error_key ? get_error_request_by_key(error_key) : get_error_request_for(error)
         return unless stored_error
 
         request_with_unmanaged_error = stored_error[:request]
@@ -214,6 +217,20 @@ module Grape
       rescue Redis::BaseError => e
         log(:error, "Storage error => #{e.message} - #{e}")
         idempotency_key
+      end
+
+      def get_error_request_by_key(error_key)
+        raw_request_with_error = storage.get(error_key)
+        return unless raw_request_with_error
+
+        {
+          error_key: error_key,
+          request: JSON.parse(raw_request_with_error),
+          idempotency_key: error_key.delete_prefix(error_key_prefix)
+        }
+      rescue Redis::BaseError, JSON::ParserError, TypeError => e
+        log(:error, "Error retrieving stored error request => #{e.message} - #{e}")
+        nil
       end
 
       def get_error_request_for(error)

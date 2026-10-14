@@ -393,6 +393,28 @@ describe Grape::Idempotency do
               end
             end
 
+            context 'and the stored error request disappears before the rescue_from handler finishes' do
+              it 'keeps the rescue_from response' do
+                app.rescue_from StandardError do |e|
+                  error!({ message: "Not found error" }, 404)
+                end
+
+                app.post('/payments') do
+                  idempotent do
+                    raise "Not found error"
+                  end
+                end
+
+                allow(storage).to receive(:get).and_call_original
+                allow(storage).to receive(:get).with("grape:idempotency:error:#{idempotency_key}").and_return(nil)
+
+                header "idempotency-key", idempotency_key
+                post 'payments', { amount: 100_00 }.to_json
+                expect(last_response.status).to eq(404)
+                expect(last_response.body).to eq("{\"message\":\"Not found error\"}")
+              end
+            end
+
             it 'returns the idempotency key in the headers' do
               expected_response_body = { error: "Internal Server Error" }
               app.post('/payments') do
@@ -505,6 +527,40 @@ describe Grape::Idempotency do
     end
   end
 
+  context 'endpoints without idempotency' do
+    let(:storage) do
+      MockRedis.new
+    end
+
+    before do
+      Grape::Idempotency.configure do |c|
+        c.storage = storage
+      end
+    end
+
+    context 'when a rescue_from managed exception appears' do
+      it 'does NOT access the storage and returns the rescue_from response' do
+        app.rescue_from StandardError do |e|
+          error!({ message: "Not found error" }, 404)
+        end
+
+        app.get('/orders') do
+          raise "Not found error"
+        end
+
+        expect(storage).not_to receive(:keys)
+        expect(storage).not_to receive(:get)
+        expect(storage).not_to receive(:set)
+        expect(storage).not_to receive(:del)
+
+        header "idempotency-key", idempotency_key
+        get 'orders'
+        expect(last_response.status).to eq(404)
+        expect(last_response.body).to eq("{\"message\":\"Not found error\"}")
+      end
+    end
+  end
+
   describe '.update_error_with_rescue_from_result' do
     let(:storage) do
       MockRedis.new
@@ -557,6 +613,26 @@ describe Grape::Idempotency do
         expect {
           Grape::Idempotency.update_error_with_rescue_from_result(error, 404, { "message" => "Not found error" })
         }.not_to raise_error
+      end
+    end
+
+    context 'when an error key is given' do
+      it 'reads only that key without listing the storage keys' do
+        storage.set("grape:idempotency:error:#{idempotency_key}", stored_error_body("RuntimeError", "Not found error"))
+        expect(storage).not_to receive(:keys)
+
+        Grape::Idempotency.update_error_with_rescue_from_result(error, 404, { "message" => "Not found error" }, error_key: "grape:idempotency:error:#{idempotency_key}")
+
+        stored_response = JSON.parse(storage.get("grape:idempotency:#{idempotency_key}"))
+        expect(stored_response["status"]).to eq(404)
+        expect(storage.get("grape:idempotency:error:#{idempotency_key}")).to be_nil
+      end
+
+      it 'does NOT raise when the error key has expired' do
+        expect {
+          Grape::Idempotency.update_error_with_rescue_from_result(error, 404, { "message" => "Not found error" }, error_key: "grape:idempotency:error:#{idempotency_key}")
+        }.not_to raise_error
+        expect(storage.get("grape:idempotency:#{idempotency_key}")).to be_nil
       end
     end
   end
