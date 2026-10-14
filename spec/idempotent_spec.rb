@@ -365,6 +365,11 @@ describe Grape::Idempotency do
                 post 'payments?locale=es', { amount: 100_00 }.to_json
                 expect(last_response.status).to eq(500)
                 expect(last_response.body).to include("Invalid response")
+
+                header "idempotency-key", idempotency_key
+                post 'payments?locale=es', { amount: 100_00 }.to_json
+                expect(last_response.status).to eq(500)
+                expect(last_response.body).to include("Invalid response")
               end
 
               context 'because it returns a hash with message and status but without headers' do
@@ -374,6 +379,11 @@ describe Grape::Idempotency do
                   end
 
                   define_failing_endpoint
+
+                  header "idempotency-key", idempotency_key
+                  post 'payments?locale=es', { amount: 100_00 }.to_json
+                  expect(last_response.status).to eq(500)
+                  expect(last_response.body).to include("Invalid response")
 
                   header "idempotency-key", idempotency_key
                   post 'payments?locale=es', { amount: 100_00 }.to_json

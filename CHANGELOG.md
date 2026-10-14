@@ -10,13 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 * Catch errors thrown with `error!` inside `rescue_from` handlers, which raised `UncaughtThrowError` with Grape >= 2.1 - [@jcagarcia](https://github.com/jcagarcia).
 * Return Grape's `500 Invalid response` when a `rescue_from` handler does not return a valid response, instead of raising `NoMethodError: undefined method 'default_rescue_handler'` with Grape >= 2.1 - [@jcagarcia](https://github.com/jcagarcia).
+* Store that `500 Invalid response` for the idempotency key, so retrying the request replays it instead of returning `409 Conflict` until the key expires - [@jcagarcia](https://github.com/jcagarcia).
 * Support `rescue_from ..., with: :helper_method` with Grape >= 3.0, which resolves symbol handlers on the endpoint - [@jcagarcia](https://github.com/jcagarcia).
 * Only treat a Hash returned by a `rescue_from` handler as an error response when it contains `:message`, `:status` and `:headers`, matching Grape - [@jcagarcia](https://github.com/jcagarcia).
 * Handle `Grape::Exceptions::ErrorResponse` thrown by `error!` with Grape >= 3.3, both inside `idempotent` blocks and inside `rescue_from` handlers - [@jcagarcia](https://github.com/jcagarcia).
 
 ### Changed
 
-* [#24](https://github.com/jcagarcia/grape-idempotency/issues/24): Test every supported Ruby (2.6 - 4.0) and Grape minor line (1.5 - 4.0) combination in CI, plus the latest Grape release, with a weekly scheduled run - [@jcagarcia](https://github.com/jcagarcia).
+* [#24](https://github.com/jcagarcia/grape-idempotency/issues/24): Test Ruby (2.6 - 4.0) and Grape (1.5 - 4.0) in CI: the combinations where behaviour changes on every push and pull request, and every supported combination plus the latest Grape release weekly or on demand - [@jcagarcia](https://github.com/jcagarcia).
 * Document Ruby and Grape compatibility in the README - [@jcagarcia](https://github.com/jcagarcia).
 
 

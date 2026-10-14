@@ -27,7 +27,10 @@ module Grape
           response
         else
           # default_rescue_handler is private since grape 2.1
-          run_rescue_handler(method(:default_rescue_handler), Grape::Exceptions::InvalidResponse.new, endpoint)
+          response = run_rescue_handler(method(:default_rescue_handler), Grape::Exceptions::InvalidResponse.new, endpoint)
+          # Store it under the original error, the one the pending idempotent request was registered with
+          update_idempotency_error_with(error, response)
+          response
         end
       end
 
