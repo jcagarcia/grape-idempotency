@@ -83,7 +83,7 @@ module Grape
         raise
       rescue => e
         log(:debug, "An unexpected error was raised when performing the block.")
-        if !stored_request && !response
+        if idempotency_key && !stored_request && !response
           validate_config!
           log(:debug, "Storing error response.")
           original_request_id = get_request_id(grape.request.headers)

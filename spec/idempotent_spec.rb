@@ -505,6 +505,28 @@ describe Grape::Idempotency do
             expect(last_response.body).to eq({ amount_to: 2 }.to_json)
           end
 
+          context 'and a rescue_from managed exception appears executing the code' do
+            it 'does NOT access the storage' do
+              app.rescue_from StandardError do |e|
+                error!({ message: "Not found error" }, 404)
+              end
+
+              app.post('/payments') do
+                idempotent do
+                  raise "Not found error"
+                end
+              end
+
+              expect(storage).not_to receive(:keys)
+              expect(storage).not_to receive(:get)
+              expect(storage).not_to receive(:set)
+
+              post 'payments', { amount: 100_00 }.to_json
+              expect(last_response.status).to eq(404)
+              expect(last_response.body).to eq("{\"message\":\"Not found error\"}")
+            end
+          end
+
           context 'BUT the idempotency key header was mandatory' do
             it 'returns 400 bad request response' do
               app.post('/payments') do
