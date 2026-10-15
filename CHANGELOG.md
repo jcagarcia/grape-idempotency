@@ -4,7 +4,7 @@ All changes to `grape-idempotency` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.1.2] - (Next)
+## [1.2.0] - (Next)
 
 ### Fix
 
@@ -12,10 +12,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-* Your contribution here.
+* Store a SHA-256 digest of the request params instead of the params, and a digest of the error message instead of the message for unexpected errors. Requests stored by previous versions are still read - [@jcagarcia](https://github.com/jcagarcia).
+* Do not log idempotency keys, stored requests or response bodies. Fix the inverted values of the "Same params?" and "Same path?" debug log - [@jcagarcia](https://github.com/jcagarcia).
+* Log a warning the first time an idempotent endpoint is performed when the stored data is not encrypted - [@jcagarcia](https://github.com/jcagarcia).
+* Document the data stored in `Redis` and for how long - [@jcagarcia](https://github.com/jcagarcia).
 
 ### Feature
 
+* Add `encryption_key` and `encryptor` configuration options for encrypting the requests and responses stored in `Redis` - [@jcagarcia](https://github.com/jcagarcia).
 * Your contribution here.
 
 

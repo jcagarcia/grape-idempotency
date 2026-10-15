@@ -2,7 +2,10 @@ require 'grape'
 require 'redis'
 require 'logger'
 require 'securerandom'
+require 'digest'
+require 'json'
 require 'grape/idempotency/version'
+require 'grape/idempotency/encryptor'
 require 'grape/idempotency/middleware/error'
 
 module Grape
@@ -11,6 +14,9 @@ module Grape
     Grape::Endpoint.send :include, Grape::Idempotency::Helpers
 
     ERROR_KEY_ENV = "grape.idempotency.error_key".freeze
+    ENCRYPTED_RECORD_PREFIX = "encrypted:v1:".freeze
+
+    class UnreadableRecordError < StandardError; end
 
     class << self
       ORIGINAL_REQUEST_HEADER = "Original-Request".freeze
@@ -23,23 +29,34 @@ module Grape
         clean_configuration = Configuration.new
         clean_configuration.storage = storage
         @configuration = clean_configuration
+        @unencrypted_storage_warned = false
       end
 
       def idempotent(grape, required: false, &block)
         validate_config!
+        warn_unencrypted_storage unless encryptor
         log(:debug, "Performing endpoint \"#{grape.request.path}\" with idempotency.")
         log(:debug, "Idempotency key is #{!required ? 'NOT' : ''} mandatory for this endpoint.")
 
         idempotency_key = get_idempotency_key(grape.request.headers)
-        log(:debug, "Idempotency key received in request header \"#{configuration.idempotency_key_header.downcase}\" => \"#{idempotency_key}\"") if idempotency_key
+        log(:debug, "Idempotency key received in request header \"#{configuration.idempotency_key_header.downcase}\".") if idempotency_key
 
         grape.error!(configuration.mandatory_header_response, 400) if required && !idempotency_key
         return block.call if !idempotency_key
 
-        stored_request = get_from_storage(idempotency_key)
-        log(:debug, "Request has been found for the provided idempotency key => #{stored_request}") if stored_request
-        if stored_request && (stored_request["params"] != grape.request.params || stored_request["path"] != grape.request.path)
-          log(:debug, "Request has conflicts. Same params? => #{stored_request["params"] != grape.request.params}. Same path? => #{stored_request["path"] != grape.request.path}")
+        request_params_digest = params_digest(grape.request.params)
+        begin
+          stored_request = get_from_storage(idempotency_key)
+        rescue UnreadableRecordError
+          log(:error, "The request stored for the provided idempotency key could NOT be read. Check the encryption configuration.")
+          log(:debug, "Returning conflict error response.")
+          grape.error!(configuration.conflict_error_response, 422)
+        end
+        log(:debug, "Request has been found for the provided idempotency key.") if stored_request
+        same_params = stored_request && stored_params_digest(stored_request) == request_params_digest
+        same_path = stored_request && stored_request["path"] == grape.request.path
+        if stored_request && (!same_params || !same_path)
+          log(:debug, "Request has conflicts. Same params? => #{same_params}. Same path? => #{same_path}")
           log(:debug, "Returning conflict error response.")
           grape.error!(configuration.conflict_error_response, 422)
         elsif stored_request && stored_request["processing"] == true
@@ -56,7 +73,7 @@ module Grape
         log(:debug, "Previous request information has NOT been found for the provided idempotency key.")
 
         original_request_id = get_request_id(grape.request.headers)
-        success = store_processing_request(idempotency_key, grape.request.path, grape.request.params, original_request_id)
+        success = store_processing_request(idempotency_key, grape.request.path, request_params_digest, original_request_id)
         if !success
           log(:error, "Request NOT stored as processing. Concurrent requests for the same idempotency key appeared.")
           grape.error!(configuration.processing_response, 409)
@@ -73,7 +90,7 @@ module Grape
         log(:debug, "Block has been performed.")
 
         if is_an_error?(response)
-          log(:debug, "An error response was returned by the performed block. => #{response}")
+          log(:debug, "An error response was returned by the performed block.")
           response = response.is_a?(Hash) ? response[:message] : response.message
         end
 
@@ -87,7 +104,7 @@ module Grape
           validate_config!
           log(:debug, "Storing error response.")
           original_request_id = get_request_id(grape.request.headers)
-          stored_key = store_error_request(idempotency_key, grape.request.path, grape.request.params, grape.status, original_request_id, e)
+          stored_key = store_error_request(idempotency_key, grape.request.path, params_digest(grape.request.params), grape.status, original_request_id, e)
           if stored_key
             log(:debug, "Error response stored.")
             grape.env[ERROR_KEY_ENV] = error_key(stored_key)
@@ -101,7 +118,7 @@ module Grape
         if !stored_request && response
           validate_config!
           log(:debug, "Storing response.")
-          stored_key = store_request_response(idempotency_key, grape.request.path, grape.request.params, grape.status, original_request_id, response)
+          stored_key = store_request_response(idempotency_key, grape.request.path, request_params_digest, grape.status, original_request_id, response)
           if stored_key
             log(:debug, "Response stored.")
             grape.header(configuration.idempotency_key_header, stored_key)
@@ -118,10 +135,10 @@ module Grape
         request_with_unmanaged_error = stored_error[:request]
         idempotency_key = stored_error[:idempotency_key]
         path = request_with_unmanaged_error["path"]
-        params = request_with_unmanaged_error["params"]
+        request_params_digest = stored_params_digest(request_with_unmanaged_error)
         original_request_id = request_with_unmanaged_error["original_request"]
 
-        store_request_response(idempotency_key, path, params, status, original_request_id, response)
+        store_request_response(idempotency_key, path, request_params_digest, status, original_request_id, response)
         storage.del(stored_error[:error_key])
       rescue Redis::BaseError => e
         log(:error, "Storage error => #{e.message} - #{e}")
@@ -132,6 +149,21 @@ module Grape
 
       def validate_config!
         raise Configuration::Error.new("A Redis instance must be configured as cache storage") unless valid_storage?
+        validate_encryption_config!
+      end
+
+      def validate_encryption_config!
+        if configuration.encryption_key && configuration.encryptor
+          raise Configuration::Error.new("Configure either an encryption_key or an encryptor, not both")
+        end
+
+        if configuration.encryption_key && !(configuration.encryption_key.is_a?(String) && !configuration.encryption_key.empty?)
+          raise Configuration::Error.new("The encryption_key must be a non-empty String")
+        end
+
+        if configuration.encryptor && !(configuration.encryptor.respond_to?(:encrypt) && configuration.encryptor.respond_to?(:decrypt))
+          raise Configuration::Error.new("The encryptor must respond to encrypt and decrypt")
+        end
       end
 
       def valid_storage?
@@ -161,37 +193,37 @@ module Grape
         value = storage.get(key(idempotency_key))
         return unless value
 
-        JSON.parse(value)
+        deserialize(value)
       rescue Redis::BaseError => e
         log(:error, "Storage error => #{e.message} - #{e}")
         return if configuration.manage_redis_exceptions
         raise
       end
 
-      def store_processing_request(idempotency_key, path, params, request_id)
+      def store_processing_request(idempotency_key, path, request_params_digest, request_id)
         body = {
           path: path,
-          params: params,
+          params_digest: request_params_digest,
           original_request: request_id,
           processing: true
         }
 
-        storage.set(key(idempotency_key), body.to_json, ex: configuration.expires_in, nx: true)
+        storage.set(key(idempotency_key), serialize(body), ex: configuration.expires_in, nx: true)
       rescue Redis::BaseError => e
         return true if configuration.manage_redis_exceptions
         raise
       end
 
-      def store_request_response(idempotency_key, path, params, status, request_id, response)
+      def store_request_response(idempotency_key, path, request_params_digest, status, request_id, response)
         body = {
           path: path,
-          params: params,
+          params_digest: request_params_digest,
           status: status,
           original_request: request_id,
           response: response
         }
 
-        storage.set(key(idempotency_key), body.to_json, ex: configuration.expires_in, nx: false)
+        storage.set(key(idempotency_key), serialize(body), ex: configuration.expires_in, nx: false)
 
         idempotency_key
       rescue Redis::BaseError => e
@@ -199,19 +231,19 @@ module Grape
         idempotency_key
       end
 
-      def store_error_request(idempotency_key, path, params, status, request_id, error)
+      def store_error_request(idempotency_key, path, request_params_digest, status, request_id, error)
         body = {
           path: path,
-          params: params,
+          params_digest: request_params_digest,
           status: status,
           original_request: request_id,
           error: {
             class_name: error.class.to_s,
-            message: error.message
+            message_digest: digest(error.message)
           }
-        }.to_json
+        }
 
-        storage.set(error_key(idempotency_key), body, ex: 30, nx: false)
+        storage.set(error_key(idempotency_key), serialize(body), ex: 30, nx: false)
 
         idempotency_key
       rescue Redis::BaseError => e
@@ -225,10 +257,10 @@ module Grape
 
         {
           error_key: error_key,
-          request: JSON.parse(raw_request_with_error),
+          request: deserialize(raw_request_with_error),
           idempotency_key: error_key.delete_prefix(error_key_prefix)
         }
-      rescue Redis::BaseError, JSON::ParserError, TypeError => e
+      rescue Redis::BaseError, UnreadableRecordError, TypeError => e
         log(:error, "Error retrieving stored error request => #{e.message} - #{e}")
         nil
       end
@@ -241,11 +273,12 @@ module Grape
           raw_request_with_error = storage.get(key)
           next unless raw_request_with_error
 
-          request_with_error = JSON.parse(raw_request_with_error)
+          request_with_error = deserialize(raw_request_with_error)
           error_class_name = request_with_error["error"]["class_name"]
-          error_message = request_with_error["error"]["message"]
+          # Error requests stored by versions < 1.2.0 contain the error message instead of its digest
+          error_message_digest = request_with_error["error"]["message_digest"] || digest(request_with_error["error"]["message"].to_s)
 
-          if error_class_name == error.class.to_s && error_message == error.message
+          if error_class_name == error.class.to_s && error_message_digest == digest(error.message)
             {
               error_key: key,
               request: request_with_error,
@@ -253,9 +286,71 @@ module Grape
             }
           end
         end.compact.first
-      rescue Redis::BaseError, JSON::ParserError, TypeError => e
+      rescue Redis::BaseError, UnreadableRecordError, TypeError => e
         log(:error, "Error retrieving stored error request => #{e.message} - #{e}")
         nil
+      end
+
+      def serialize(record)
+        json = record.to_json
+        return json unless encryptor
+
+        "#{ENCRYPTED_RECORD_PREFIX}#{encryptor.encrypt(json)}"
+      end
+
+      def deserialize(value)
+        if value.start_with?(ENCRYPTED_RECORD_PREFIX)
+          raise UnreadableRecordError, "Stored request is encrypted but no encryption is configured" unless encryptor
+
+          value = encryptor.decrypt(value.delete_prefix(ENCRYPTED_RECORD_PREFIX))
+        end
+
+        # Records stored before configuring the encryption are not encrypted and are still accepted
+        JSON.parse(value)
+      rescue UnreadableRecordError
+        raise
+      rescue StandardError => e
+        raise UnreadableRecordError, "Stored request could not be read (#{e.class})"
+      end
+
+      def encryptor
+        return configuration.encryptor if configuration.encryptor
+        return unless configuration.encryption_key
+
+        if @encryptor.nil? || @encryptor_key != configuration.encryption_key
+          @encryptor = Encryptor.new(configuration.encryption_key)
+          @encryptor_key = configuration.encryption_key
+        end
+        @encryptor
+      end
+
+      def warn_unencrypted_storage
+        return if @unencrypted_storage_warned
+
+        @unencrypted_storage_warned = true
+        log(:warn, "Stored requests and responses are NOT encrypted. Configure an encryption_key or an encryptor to encrypt them.")
+      end
+
+      def params_digest(params)
+        digest(JSON.generate(canonical(JSON.parse(params.to_json))))
+      end
+
+      def stored_params_digest(stored_request)
+        # Requests stored by versions < 1.2.0 contain the params instead of their digest
+        stored_request["params_digest"] || params_digest(stored_request["params"])
+      end
+
+      # Sorts hash keys so the digest does not depend on the params order
+      def canonical(value)
+        case value
+        when Hash then value.keys.sort.map { |k| [k, canonical(value[k])] }
+        when Array then value.map { |v| canonical(v) }
+        else value
+        end
+      end
+
+      def digest(value)
+        Digest::SHA256.hexdigest(value)
       end
 
       def is_an_error?(response)
@@ -290,7 +385,7 @@ module Grape
       end
 
       def logger
-        return @logger if @logger
+        return @logger if @logger && @logger.equal?(configuration.logger)
 
         @logger = configuration.logger
         @logger.level = configuration.logger_level
@@ -305,7 +400,7 @@ module Grape
     class Configuration
       attr_accessor :storage, :logger, :logger_level, :logger_prefix, :expires_in, :idempotency_key_header,
         :request_id_header, :conflict_error_response, :processing_response, :mandatory_header_response,
-        :manage_redis_exceptions
+        :manage_redis_exceptions, :encryption_key, :encryptor
 
       class Error < StandardError; end
 
@@ -318,6 +413,8 @@ module Grape
         @idempotency_key_header = "idempotency-key"
         @request_id_header = "x-request-id"
         @manage_redis_exceptions = false
+        @encryption_key = nil
+        @encryptor = nil
         @conflict_error_response = {
           "title" => "Idempotency-Key is already used",
           "detail" => "This operation is idempotent and it requires correct usage of Idempotency Key. Idempotency Key MUST not be reused across different payloads of this operation."
