@@ -11,12 +11,12 @@ jobs:
       packages: write
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     - name: Set up Ruby 3.2
     # To automatically get bug fixes and new Ruby versions for ruby/setup-ruby,
     # change this to (see https://github.com/ruby/setup-ruby#versioning):
     # uses: ruby/setup-ruby@v1
-      uses: ruby/setup-ruby@55283cc23133118229fd3f97f9336ee23a179fcf # v1.146.0
+      uses: ruby/setup-ruby@651ff0d62c5c79bed6d53ec518387aae20e72c1a # v1.329.0
       with:
         ruby-version: 3.2.2
 
@@ -24,14 +24,15 @@ jobs:
       id: get-version
       run: |
         VERSION=$(ruby -r './lib/grape/idempotency/version.rb' -e "puts Grape::Idempotency::VERSION")
-        echo "::set-output name=version::$VERSION"
+        echo "version=$VERSION" >> "$GITHUB_OUTPUT"
       shell: bash
 
     - name: Publish to RubyGems
       run: |
-        gem fetch grape-idempotency -v ${{ steps.get-version.outputs.version }}
-        if [ $? -eq 1 ]; then
-          echo "Gem version already exists on RubyGems. Skipping the push to RubyGems."
+        VERSION=${{ steps.get-version.outputs.version }}
+        STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://rubygems.org/api/v2/rubygems/grape-idempotency/versions/${VERSION}.json")
+        if [ "$STATUS" = "200" ]; then
+          echo "Gem version ${VERSION} already exists on RubyGems. Skipping the push to RubyGems."
           exit 0
         fi
         mkdir -p $HOME/.gem
