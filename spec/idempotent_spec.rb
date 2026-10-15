@@ -395,6 +395,7 @@ describe Grape::Idempotency do
 
             context 'and the stored error request disappears before the rescue_from handler finishes' do
               it 'keeps the rescue_from response' do
+                app.error_formatter :txt, Grape::ErrorFormatter::Json
                 app.rescue_from StandardError do |e|
                   error!({ message: "Not found error" }, 404)
                 end
@@ -507,6 +508,7 @@ describe Grape::Idempotency do
 
           context 'and a rescue_from managed exception appears executing the code' do
             it 'does NOT access the storage' do
+              app.error_formatter :txt, Grape::ErrorFormatter::Json
               app.rescue_from StandardError do |e|
                 error!({ message: "Not found error" }, 404)
               end
@@ -562,6 +564,7 @@ describe Grape::Idempotency do
 
     context 'when a rescue_from managed exception appears' do
       it 'does NOT access the storage and returns the rescue_from response' do
+        app.error_formatter :txt, Grape::ErrorFormatter::Json
         app.rescue_from StandardError do |e|
           error!({ message: "Not found error" }, 404)
         end
