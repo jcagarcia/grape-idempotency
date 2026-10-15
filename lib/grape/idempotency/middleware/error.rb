@@ -23,14 +23,10 @@ module Grape
         response = error_response(response) if thrown_error?(response)
 
         if response.is_a?(Rack::Response)
-          update_idempotency_error_with(error, response)
           response
         else
           # default_rescue_handler is private since grape 2.1
-          response = run_rescue_handler(method(:default_rescue_handler), Grape::Exceptions::InvalidResponse.new, endpoint)
-          # Store it under the original error, the one the pending idempotent request was registered with
-          update_idempotency_error_with(error, response)
-          response
+          run_rescue_handler(method(:default_rescue_handler), Grape::Exceptions::InvalidResponse.new, endpoint)
         end
       end
 
@@ -41,19 +37,6 @@ module Grape
         return true if defined?(Grape::Exceptions::ErrorResponse) && response.is_a?(Grape::Exceptions::ErrorResponse)
 
         response.is_a?(Hash) && response.key?(:message) && response.key?(:status) && response.key?(:headers)
-      end
-
-      def update_idempotency_error_with(error, response)
-        stored_error_key = env && env[Grape::Idempotency::ERROR_KEY_ENV]
-        return unless stored_error_key
-
-        begin
-          body = JSON.parse(response.body.join)
-        rescue JSON::ParserError
-          body = response.body.join
-        end
-
-        Grape::Idempotency.update_error_with_rescue_from_result(error, response.status, body, error_key: stored_error_key)
       end
     end
   end
