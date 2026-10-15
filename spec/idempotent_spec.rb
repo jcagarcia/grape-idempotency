@@ -1313,6 +1313,35 @@ describe Grape::Idempotency do
         expect(last_response.body).to eq("{\"message\":\"Not found error\"}")
       end
 
+      it 'replays the original headers and binary body from the encrypted response' do
+        binary_body = [0xff, 0x00, 0x10].pack('C*')
+
+        app.post('/files') do
+          idempotent do
+            content_type 'application/octet-stream'
+            header 'Location', '/files/1'
+            env['api.format'] = :binary
+            status 201
+            body binary_body
+          end
+        end
+
+        header "idempotency-key", idempotency_key
+        post 'files', { name: "report" }
+        first_response = last_response
+
+        stored_value = storage.get("grape:idempotency:#{idempotency_key}")
+        expect(stored_value).to start_with("encrypted:v1:")
+        expect(stored_value).not_to include("/files/1")
+
+        header "idempotency-key", idempotency_key
+        post 'files', { name: "report" }
+        expect(last_response.status).to eq(201)
+        expect(last_response.body.b).to eq(first_response.body.b)
+        expect(first_response.body.b).to eq(binary_body)
+        expect(last_response.headers["location"] || last_response.headers["Location"]).to eq("/files/1")
+      end
+
       context 'when the request was stored before configuring the encryption' do
         it 'returns the original response' do
           plain_request = {
