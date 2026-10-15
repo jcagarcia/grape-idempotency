@@ -384,3 +384,4 @@ Open issues on the GitHub issue tracker with clear information.
 
 * Juan Carlos García - Creator - https://github.com/jcagarcia
 * Carlos Cabanero - Contributor - https://github.com/Flip120
+* Salvador Revert Pedron - Contributor - https://github.com/salrepe
