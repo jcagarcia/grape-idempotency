@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * Support `rescue_from ..., with: :helper_method` with Grape >= 3.0, which resolves symbol handlers on the endpoint - [@jcagarcia](https://github.com/jcagarcia).
 * Only treat a Hash returned by a `rescue_from` handler as an error response when it contains `:message`, `:status` and `:headers`, matching Grape - [@jcagarcia](https://github.com/jcagarcia).
 * Handle `Grape::Exceptions::ErrorResponse` thrown by `error!` with Grape >= 3.3, both inside `idempotent` blocks and inside `rescue_from` handlers - [@jcagarcia](https://github.com/jcagarcia).
+* [#22](https://github.com/jcagarcia/grape-idempotency/pull/22): Do not turn `rescue_from` responses into 500 errors when a stored error request expires or is invalid while being looked up. - [@salrepe](https://github.com/salrepe).
+* [#22](https://github.com/jcagarcia/grape-idempotency/pull/22): Only access the storage from the error middleware for requests that stored an error inside `idempotent`, reading that exact key instead of scanning all error keys. - [@salrepe](https://github.com/salrepe).
+* [#22](https://github.com/jcagarcia/grape-idempotency/pull/22): Do not store error requests when no idempotency key was provided. - [@salrepe](https://github.com/salrepe).
 
 ### Changed
 

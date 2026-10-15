@@ -44,13 +44,16 @@ module Grape
       end
 
       def update_idempotency_error_with(error, response)
+        stored_error_key = env && env[Grape::Idempotency::ERROR_KEY_ENV]
+        return unless stored_error_key
+
         begin
           body = JSON.parse(response.body.join)
         rescue JSON::ParserError
           body = response.body.join
         end
 
-        Grape::Idempotency.update_error_with_rescue_from_result(error, response.status, body)
+        Grape::Idempotency.update_error_with_rescue_from_result(error, response.status, body, error_key: stored_error_key)
       end
     end
   end
