@@ -211,7 +211,8 @@ describe Grape::Idempotency do
                 expect(key).to eq("grape:idempotency:#{idempotency_key}")
                 json_body = JSON.parse(body, symbolize_names: true)
                 expect(json_body[:path]).to eq("/payments")
-                expect(json_body[:params]).to eq({:"locale"=>"undefined", :"{\"amount\":10000}"=>nil})
+                expect(json_body).not_to have_key(:params)
+                expect(json_body[:params_digest]).to match(/\A\h{64}\z/)
                 expect(opts).to eq({ex: 216_000, nx: true})
               end
 
@@ -219,7 +220,8 @@ describe Grape::Idempotency do
                 expect(key).to eq("grape:idempotency:#{idempotency_key}")
                 json_body = JSON.parse(body, symbolize_names: true)
                 expect(json_body[:path]).to eq("/payments")
-                expect(json_body[:params]).to eq({:"locale"=>"undefined", :"{\"amount\":10000}"=>nil})
+                expect(json_body).not_to have_key(:params)
+                expect(json_body[:params_digest]).to match(/\A\h{64}\z/)
                 expect(json_body[:status]).to eq(500)
                 expect(json_body[:response]).to eq(expected_response_body.to_json)
                 expect(opts).to eq({ex: 216_000, nx: false})
@@ -662,6 +664,174 @@ describe Grape::Idempotency do
     end
   end
 
+  context 'stored data' do
+    let(:storage) do
+      MockRedis.new
+    end
+
+    let(:log) { StringIO.new }
+
+    before do
+      Grape::Idempotency.configure do |c|
+        c.storage = storage
+        c.logger = Logger.new(log)
+        c.logger_level = :debug
+      end
+    end
+
+    after do
+      Grape::Idempotency.restore_configuration
+    end
+
+    it 'does NOT store the request params' do
+      app.post('/payments') do
+        idempotent do
+          status 201
+          { card_number: "4242424242424242" }.to_json
+        end
+      end
+
+      header "idempotency-key", idempotency_key
+      post 'payments', { card_number: "4242424242424242", cvv: "123" }
+
+      stored_request = JSON.parse(storage.get("grape:idempotency:#{idempotency_key}"))
+      expect(stored_request).not_to have_key("params")
+      expect(stored_request["params_digest"]).to match(/\A\h{64}\z/)
+      expect(storage.get("grape:idempotency:#{idempotency_key}")).not_to include("123")
+    end
+
+    it 'returns the original response when the same params are sent in a different order' do
+      allow(SecureRandom).to receive(:random_number).and_return(1, 2)
+
+      app.post('/payments') do
+        idempotent do
+          status 201
+          { amount_to: SecureRandom.random_number }.to_json
+        end
+      end
+
+      header "idempotency-key", idempotency_key
+      post 'payments', { amount: 100_00, currency: "EUR", items: [{ b: 2, a: 1 }] }
+
+      header "idempotency-key", idempotency_key
+      post 'payments', { items: [{ a: 1, b: 2 }], currency: "EUR", amount: 100_00 }
+      expect(last_response.status).to eq(201)
+      expect(last_response.body).to eq({ amount_to: 1 }.to_json)
+    end
+
+    it 'does NOT store the error message of an unexpected error' do
+      app.post('/payments') do
+        idempotent do
+          raise "Card 4242424242424242 declined"
+        end
+      end
+
+      header "idempotency-key", idempotency_key
+      expect { post 'payments', { amount: 100_00 } }.to raise_error(RuntimeError)
+
+      stored_error = storage.get("grape:idempotency:error:#{idempotency_key}")
+      expect(stored_error).not_to include("4242424242424242")
+      expect(JSON.parse(stored_error)["error"]["message_digest"]).to match(/\A\h{64}\z/)
+    end
+
+    context 'when the request was stored by a previous version with the request params' do
+      it 'returns the original response' do
+        legacy_request = {
+          path: "/payments",
+          params: { "amount" => "10000" },
+          status: 201,
+          original_request: "req_legacy",
+          response: { amount_to: 1 }.to_json
+        }
+        storage.set("grape:idempotency:#{idempotency_key}", legacy_request.to_json)
+
+        app.post('/payments') do
+          idempotent do
+            status 201
+            { amount_to: 2 }.to_json
+          end
+        end
+
+        header "idempotency-key", idempotency_key
+        post 'payments', { amount: 100_00 }
+        expect(last_response.status).to eq(201)
+        expect(last_response.body).to eq({ amount_to: 1 }.to_json)
+        expect(last_response.headers["original-request"]).to eq("req_legacy")
+      end
+
+      it 'returns a conflict when the params do NOT match' do
+        legacy_request = {
+          path: "/payments",
+          params: { "amount" => "80000" },
+          status: 201,
+          original_request: "req_legacy",
+          response: { amount_to: 1 }.to_json
+        }
+        storage.set("grape:idempotency:#{idempotency_key}", legacy_request.to_json)
+
+        app.post('/payments') do
+          idempotent do
+            status 201
+            { amount_to: 2 }.to_json
+          end
+        end
+
+        header "idempotency-key", idempotency_key
+        post 'payments', { amount: 100_00 }
+        expect(last_response.status).to eq(422)
+      end
+    end
+
+    describe 'logs' do
+      it 'does NOT log the idempotency key, the request params or the response' do
+        app.post('/payments') do
+          idempotent do
+            status 201
+            { card_number: "4242424242424242" }.to_json
+          end
+        end
+
+        2.times do
+          header "idempotency-key", idempotency_key
+          post 'payments', { card_number: "4242424242424242" }
+        end
+
+        expect(log.string).to include("Returning the response from the original request.")
+        expect(log.string).not_to include(idempotency_key)
+        expect(log.string).not_to include("4242424242424242")
+      end
+
+      it 'does NOT log the error response returned by the block' do
+        app.post('/payments') do
+          idempotent do
+            error!({ message: "Card 4242424242424242 declined" }, 402)
+          end
+        end
+
+        header "idempotency-key", idempotency_key
+        post 'payments', { amount: 100_00 }
+
+        expect(log.string).to include("An error response was returned by the performed block.")
+        expect(log.string).not_to include("4242424242424242")
+      end
+
+      it 'warns once that the stored data is NOT encrypted' do
+        app.post('/payments') do
+          idempotent do
+            status 201
+          end
+        end
+
+        2.times do
+          header "idempotency-key", SecureRandom.uuid
+          post 'payments'
+        end
+
+        expect(log.string.scan("Stored requests and responses are NOT encrypted").size).to eq(1)
+      end
+    end
+  end
+
   context 'configuration' do
     let(:storage) do
       MockRedis.new
@@ -720,6 +890,241 @@ describe Grape::Idempotency do
 
         header "idempotency-key", idempotency_key
         post 'payments?locale=undefined', { amount: 100_00 }.to_json
+      end
+    end
+
+    describe 'encryption_key' do
+      let(:log) { StringIO.new }
+
+      before do
+        Grape::Idempotency.configure do |c|
+          c.storage = storage
+          c.encryption_key = "a-secret-encryption-key"
+          c.logger = Logger.new(log)
+        end
+      end
+
+      def define_endpoint
+        allow(SecureRandom).to receive(:random_number).and_return(1, 2)
+
+        app.post('/payments') do
+          idempotent do
+            status 201
+            { amount_to: SecureRandom.random_number, card_number: "4242424242424242" }.to_json
+          end
+        end
+      end
+
+      it 'encrypts the stored request and response' do
+        define_endpoint
+
+        header "idempotency-key", idempotency_key
+        post 'payments', { amount: 100_00 }
+
+        stored_value = storage.get("grape:idempotency:#{idempotency_key}")
+        expect(stored_value).to start_with("encrypted:v1:")
+        expect(stored_value).not_to include("4242424242424242")
+        expect(stored_value).not_to include("/payments")
+      end
+
+      it 'returns the original response' do
+        define_endpoint
+
+        header "idempotency-key", idempotency_key
+        post 'payments', { amount: 100_00 }
+
+        header "idempotency-key", idempotency_key
+        post 'payments', { amount: 100_00 }
+        expect(last_response.status).to eq(201)
+        expect(last_response.body).to eq({ amount_to: 1, card_number: "4242424242424242" }.to_json)
+      end
+
+      it 'returns a conflict when the params do NOT match' do
+        define_endpoint
+
+        header "idempotency-key", idempotency_key
+        post 'payments', { amount: 100_00 }
+
+        header "idempotency-key", idempotency_key
+        post 'payments', { amount: 800_00 }
+        expect(last_response.status).to eq(422)
+      end
+
+      it 'does NOT warn that the stored data is NOT encrypted' do
+        define_endpoint
+
+        header "idempotency-key", idempotency_key
+        post 'payments', { amount: 100_00 }
+
+        expect(log.string).not_to include("NOT encrypted")
+      end
+
+      it 'encrypts the response stored by a rescue_from handler' do
+        app.error_formatter :txt, Grape::ErrorFormatter::Json
+        allow(SecureRandom).to receive(:random_number).and_return(1, 2)
+
+        app.rescue_from StandardError do |e|
+          error!({ message: "Not found error" }, 404)
+        end
+
+        app.post('/payments') do
+          idempotent do
+            raise "Not found error" if SecureRandom.random_number == 1
+            status 201
+          end
+        end
+
+        header "idempotency-key", idempotency_key
+        post 'payments', { amount: 100_00 }
+        expect(last_response.status).to eq(404)
+        expect(storage.get("grape:idempotency:#{idempotency_key}")).to start_with("encrypted:v1:")
+
+        header "idempotency-key", idempotency_key
+        post 'payments', { amount: 100_00 }
+        expect(last_response.status).to eq(404)
+        expect(last_response.body).to eq({ "message" => "Not found error" }.inspect)
+      end
+
+      context 'when the request was stored before configuring the encryption' do
+        it 'returns the original response' do
+          plain_request = {
+            path: "/payments",
+            params: { "amount" => "10000" },
+            status: 201,
+            original_request: "req_plain",
+            response: { amount_to: 1 }.to_json
+          }
+          storage.set("grape:idempotency:#{idempotency_key}", plain_request.to_json)
+          define_endpoint
+
+          header "idempotency-key", idempotency_key
+          post 'payments', { amount: 100_00 }
+          expect(last_response.status).to eq(201)
+          expect(last_response.body).to eq({ amount_to: 1 }.to_json)
+        end
+      end
+
+      context 'when the stored request was encrypted with another key' do
+        it 'returns a conflict without performing the block again' do
+          define_endpoint
+
+          header "idempotency-key", idempotency_key
+          post 'payments', { amount: 100_00 }
+
+          Grape::Idempotency.configure do |c|
+            c.encryption_key = "another-secret-encryption-key"
+          end
+
+          header "idempotency-key", idempotency_key
+          post 'payments', { amount: 100_00 }
+          expect(last_response.status).to eq(422)
+          expect(SecureRandom).to have_received(:random_number).once
+          expect(log.string).to include("could NOT be read")
+        end
+      end
+
+      context 'when the stored request was encrypted and the encryption is NOT configured anymore' do
+        it 'returns a conflict without performing the block again' do
+          define_endpoint
+
+          header "idempotency-key", idempotency_key
+          post 'payments', { amount: 100_00 }
+
+          Grape::Idempotency.configure do |c|
+            c.encryption_key = nil
+          end
+
+          header "idempotency-key", idempotency_key
+          post 'payments', { amount: 100_00 }
+          expect(last_response.status).to eq(422)
+          expect(SecureRandom).to have_received(:random_number).once
+        end
+      end
+
+      context 'when the encryption_key is empty' do
+        it 'raises a configuration error' do
+          Grape::Idempotency.configure do |c|
+            c.encryption_key = ""
+          end
+          define_endpoint
+
+          expect {
+            post 'payments'
+          }.to raise_error(Grape::Idempotency::Configuration::Error)
+        end
+      end
+
+      context 'when an encryptor is configured too' do
+        it 'raises a configuration error' do
+          Grape::Idempotency.configure do |c|
+            c.encryptor = Object.new
+          end
+          define_endpoint
+
+          expect {
+            post 'payments'
+          }.to raise_error(Grape::Idempotency::Configuration::Error, /not both/)
+        end
+      end
+    end
+
+    describe 'encryptor' do
+      let(:encryptor) do
+        Class.new do
+          def encrypt(value)
+            value.reverse
+          end
+
+          def decrypt(value)
+            value.reverse
+          end
+        end.new
+      end
+
+      before do
+        Grape::Idempotency.configure do |c|
+          c.storage = storage
+          c.encryptor = encryptor
+        end
+      end
+
+      it 'stores the request and response using the configured encryptor' do
+        allow(SecureRandom).to receive(:random_number).and_return(1, 2)
+
+        app.post('/payments') do
+          idempotent do
+            status 201
+            { amount_to: SecureRandom.random_number }.to_json
+          end
+        end
+
+        header "idempotency-key", idempotency_key
+        post 'payments', { amount: 100_00 }
+
+        stored_value = storage.get("grape:idempotency:#{idempotency_key}")
+        expect(stored_value).to start_with("encrypted:v1:")
+        expect(JSON.parse(stored_value.delete_prefix("encrypted:v1:").reverse)["status"]).to eq(201)
+
+        header "idempotency-key", idempotency_key
+        post 'payments', { amount: 100_00 }
+        expect(last_response.status).to eq(201)
+        expect(last_response.body).to eq({ amount_to: 1 }.to_json)
+      end
+
+      context 'when the encryptor does NOT respond to encrypt and decrypt' do
+        let(:encryptor) { Object.new }
+
+        it 'raises a configuration error' do
+          app.post('/payments') do
+            idempotent do
+              status 201
+            end
+          end
+
+          expect {
+            post 'payments'
+          }.to raise_error(Grape::Idempotency::Configuration::Error, /encrypt and decrypt/)
+        end
       end
     end
 

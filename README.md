@@ -15,6 +15,7 @@ Topics covered in this README:
 - [How it works](#how-it-works-)
   - [Making idempotency key header mandatory](#making-idempotency-key-header-mandatory-)
   - [Redis Storage Connectivity Issue](#redis-storage-connectivity-issue)
+  - [Stored data](#stored-data-)
 - [Configuration](#configuration-)
 - [Changelog](#changelog)
 - [Contributing](#contributing)
@@ -90,7 +91,7 @@ To execute an idempotent request, simply request your user to include an extra `
 
 This gem operates by storing the initial request's status code and response body, regardless of whether the request succeeded or failed, using a specific idempotency key. Subsequent requests with the same key will consistently yield the same result, even if there were 500 errors.
 
-Keys are automatically removed from the system if they are at least 24 hours old, and a new request is generated when a key is reused after the original has been removed. The idempotency layer compares incoming parameters to those of the original request and returns a `422 - Unprocessable Entity` status code if they don't match, preventing accidental misuse.
+Keys are automatically removed from the system once they are older than the configured [expires_in](#expires_in) (60 hours by default), and a new request is generated when a key is reused after the original has been removed. The idempotency layer compares incoming parameters to those of the original request and returns a `422 - Unprocessable Entity` status code if they don't match, preventing accidental misuse.
 If a request is received while another one with the same idempotency key is still being processed the idempotency layer returns a `409 - Conflict` status
 
 Results are only saved if an API endpoint begins its execution. If incoming parameters fail validation or if the request conflicts with another one executing concurrently, no idempotent result is stored because no API endpoint has initiated execution. In such cases, retrying these requests is safe.
@@ -160,6 +161,21 @@ If you want to avoid this functionality, and you want the gem handles the potent
 
 🚨 WARNING: If a `Redis` exception appears AFTER performing the wrapped code, nothing will be re-raised. The process will continue working and the response will be returned to the consumer of your API. However, a `409 Conflict` response can be returned to your consumer if it retried the same call with the same idempotency key. This is because the gem was not able to associate the response of the original request to the original idempotency key because those connectivity issues.
 
+### Stored data 🔐
+
+For each request with an idempotency key, the gem stores in `Redis`, under the `grape:idempotency:<idempotency-key>` key:
+
+* The request path.
+* A SHA-256 digest of the request params, used to detect when an idempotency key is reused with different params. The params themselves are NOT stored.
+* The response status and body, which are returned again when the request is retried.
+* The original request id.
+
+Stored requests are removed after [expires_in](#expires_in) seconds (60 hours by default). When an unexpected error is raised inside the `idempotent` block, the gem also stores, for 30 seconds, the error class and a digest of its message under `grape:idempotency:error:<idempotency-key>`, so the `rescue_from` response can be stored for that request.
+
+The response body is stored as returned by your endpoint, so it may include sensitive data. Configure an [encryption_key](#encryption_key) or an [encryptor](#encryptor) to encrypt everything the gem stores. Until you do, the gem logs a warning the first time an idempotent endpoint is performed.
+
+The gem never logs idempotency keys, request params or response bodies.
+
 ## Configuration 🪚
 
 In addition to the storage aspect, you have the option to supply additional configuration details to tailor the gem to the specific requirements of your project.
@@ -209,7 +225,7 @@ In the case above, you request your consumers to use the `X-Trace-Id: <trace-id>
 
 ### logger, logger_level and logger_prefix
 
-By default, the logger used by the gem is configured like `Logger.new(STDOUT)` and `INFO` level. As this gem does not log any message with `INFO` level, only `ERROR` messages will be logged.
+By default, the logger used by the gem is configured like `Logger.new(STDOUT)` and `INFO` level. As this gem does not log any message with `INFO` level, only `WARN` and `ERROR` messages will be logged.
 
 
 If you want to provide your own logger, you want to change the level to `DEBUG` or you want to provide your own prefix, you can configure the gem like:
@@ -228,7 +244,7 @@ An example of the logged information when changing the level of the log to `DEBU
 ```shell
 I, [2023-11-23T22:41:39.148163 #1]  DEBUG -- : [my-own-prefix] Performing endpoint "/payments" with idempotency.
 I, [2023-11-23T22:41:39.148176 #1]  DEBUG -- : [my-own-prefix] Idempotency key is NOT mandatory for this endpoint.
-I, [2023-11-23T22:41:39.148192 #1]  DEBUG -- : [my-own-prefix] Idempotency key received in request header "x-custom-idempotency-key" => "fd77c9d6-b7da-4966-aac8-40ee258f24aa"
+I, [2023-11-23T22:41:39.148192 #1]  DEBUG -- : [my-own-prefix] Idempotency key received in request header "x-custom-idempotency-key".
 I, [2023-11-23T22:41:39.148210 #1]  DEBUG -- : [my-own-prefix] Previous request information has NOT been found for the provided idempotency key.
 I, [2023-11-23T22:41:39.148248 #1]  DEBUG -- : [my-own-prefix] Request stored as processing.
 I, [2023-11-23T22:41:39.148261 #1]  DEBUG -- : [my-own-prefix] Performing the provided block.
@@ -237,8 +253,8 @@ I, [2023-11-23T22:41:39.148287 #1]  DEBUG -- : [my-own-prefix] Storing response.
 I, [2023-11-23T22:41:39.148317 #1]  DEBUG -- : [my-own-prefix] Response stored.
 I, [2023-11-23T22:41:39.148473 #1]  DEBUG -- : [my-own-prefix] Performing endpoint "/payments" with idempotency.
 I, [2023-11-23T22:41:39.148486 #1]  DEBUG -- : [my-own-prefix] Idempotency key is NOT mandatory for this endpoint.
-I, [2023-11-23T22:41:39.148502 #1]  DEBUG -- : [my-own-prefix] Idempotency key received in request header "x-custom-idempotency-key" => "fd77c9d6-b7da-4966-aac8-40ee258f24aa"
-I, [2023-11-23T22:41:39.148523 #1]  DEBUG -- : [my-own-prefix] Request has been found for the provided idempotency key => {"path"=>"/payments", "params"=>{"locale"=>"undefined", "{\"amount\":10000}"=>nil}, "status"=>500, "original_request"=>"wadus", "response"=>"{\"error\":\"Internal Server Error\"}"}
+I, [2023-11-23T22:41:39.148502 #1]  DEBUG -- : [my-own-prefix] Idempotency key received in request header "x-custom-idempotency-key".
+I, [2023-11-23T22:41:39.148523 #1]  DEBUG -- : [my-own-prefix] Request has been found for the provided idempotency key.
 I, [2023-11-23T22:41:39.148537 #1]  DEBUG -- : [my-own-prefix] Returning the response from the original request.
 ```
 
@@ -256,6 +272,48 @@ end
 ```
 
 However, this approach carries a certain level of risk. In the case that `Redis` experiences an outage, the idempotent functionality will be lost, the endpoint will behave as no idempotent, and this issue may go unnoticed.
+
+### encryption_key
+
+Encrypts everything the gem stores in `Redis` (see [Stored data](#stored-data-)) using `ActiveSupport::MessageEncryptor` with `aes-256-gcm`. The encryption key is derived from the provided value, so use a long random secret and share the same value across all the instances of your API, otherwise a retried request reaching another instance would not be able to read the stored response.
+
+```ruby
+Grape::Idempotency.configure do |c|
+  c.storage = @storage
+  c.encryption_key = ENV.fetch("IDEMPOTENCY_ENCRYPTION_KEY") # e.g. generated with `SecureRandom.hex(32)`
+end
+```
+
+Requests stored before configuring the encryption are still read, so you can enable it without affecting the retries in progress. While deploying it, instances running a version older than `1.2.0` are not able to read the encrypted requests, so upgrade the gem before configuring the encryption.
+
+If a stored request cannot be decrypted (e.g. after changing the key, or after removing the encryption), the gem returns the [conflict_error_response](#conflict_error_response) instead of performing the request again. Those requests are removed once [expires_in](#expires_in) has elapsed.
+
+### encryptor
+
+If you want to use your own encryption (e.g. a KMS, or your existing `ActiveSupport::MessageEncryptor`), provide an object responding to `encrypt(string)` and `decrypt(string)`, both returning a `String`. `decrypt` must raise an error (or return `nil`) when the value cannot be decrypted.
+
+```ruby
+class IdempotencyEncryptor
+  def initialize(message_encryptor)
+    @message_encryptor = message_encryptor
+  end
+
+  def encrypt(value)
+    @message_encryptor.encrypt_and_sign(value)
+  end
+
+  def decrypt(value)
+    @message_encryptor.decrypt_and_verify(value)
+  end
+end
+
+Grape::Idempotency.configure do |c|
+  c.storage = @storage
+  c.encryptor = IdempotencyEncryptor.new(my_message_encryptor)
+end
+```
+
+Configure either an `encryption_key` or an `encryptor`, not both.
 
 ### conflict_error_response
 
